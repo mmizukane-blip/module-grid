@@ -1,0 +1,1936 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>モジュールグリッド — PDF図面にモジュール線</title>
+<!--
+  モジュールグリッド v1.0（2026-07-08作成）
+  PDF図面を読み込み、基準合わせ（2点計測 or 縮尺指定）をしてから
+  モジュール格子（910/1000/任意mm）を実寸どおりに重ね、線入りPDFとして保存するアプリ。
+  ・lib/pdf.min.js + lib/pdf.worker.min.js … PDF表示（Mozilla PDF.js v3.11.174 / Apache-2.0）
+  ・lib/pdf-lib.min.js … PDF書き込み（pdf-lib v1.17.1 / MIT）
+  ・ネット接続不要。index.html をダブルクリックで起動（lib フォルダと一緒に配布すること）
+-->
+<style>
+:root{
+  --bg:#f5f6f8; --bg2:#ffffff; --bg3:#eceef1;
+  --text:#1f2328; --text2:#57606a; --text3:#8b949e;
+  --bl:#2f6feb; --am:#bf8700; --rd:#d32f2f; --gn:#1a7f37; --tl:#0d8a8a;
+  --line:rgba(0,0,0,.18); --r:8px; --rl:12px;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#14171b; --bg2:#1d2126; --bg3:#262b31;
+    --text:#e6e8ea; --text2:#a8b0b8; --text3:#6e7781;
+    --bl:#5b93ff; --am:#d4a72c; --rd:#f47067; --gn:#4ac26b; --tl:#33b3ae;
+    --line:rgba(255,255,255,.16);
+  }
+}
+*{box-sizing:border-box; margin:0; padding:0;}
+html,body{height:100%;}
+body{
+  font-family:-apple-system,'Hiragino Sans','Yu Gothic UI','Yu Gothic',sans-serif;
+  font-size:14px; background:var(--bg); color:var(--text);
+  display:flex; flex-direction:column; overflow:hidden;
+}
+header{
+  display:flex; align-items:center; gap:10px; padding:8px 16px;
+  background:var(--bg2); border-bottom:0.5px solid var(--line); flex:none;
+}
+header h1{font-size:15px; font-weight:700;}
+header .sub{color:var(--text3); font-size:12px;}
+#wrap{flex:1; display:flex; min-height:0;}
+/* ---- サイドバー ---- */
+#side{
+  width:300px; flex:none; overflow-y:auto; padding:10px;
+  background:var(--bg); border-right:0.5px solid var(--line);
+}
+.card{
+  background:var(--bg2); border:0.5px solid var(--line); border-radius:var(--rl);
+  padding:10px 12px; margin-bottom:10px;
+}
+.card h2{font-size:13px; font-weight:700; margin-bottom:8px; display:flex; align-items:center; gap:6px;}
+.card h2 .num{
+  display:inline-flex; align-items:center; justify-content:center;
+  width:18px; height:18px; border-radius:50%; background:var(--bl); color:#fff;
+  font-size:11px; flex:none;
+}
+.row{display:flex; align-items:center; gap:6px; margin:6px 0; flex-wrap:wrap;}
+.hint{color:var(--text3); font-size:11.5px; line-height:1.5; margin-top:4px;}
+.status{font-size:12px; margin-top:6px; padding:5px 8px; border-radius:var(--r); background:var(--bg3);}
+.status.ok{color:var(--gn);}
+.status.ng{color:var(--rd);}
+button{
+  font:inherit; font-size:13px; color:var(--text);
+  background:var(--bg3); border:0.5px solid var(--line); border-radius:var(--r);
+  padding:5px 10px; cursor:pointer;
+}
+button:hover:not(:disabled){filter:brightness(1.06);}
+button:disabled{opacity:.45; cursor:not-allowed;}
+button.primary{background:var(--bl); border-color:transparent; color:#fff; font-weight:600;}
+button.mode-on{background:var(--am); border-color:transparent; color:#fff; font-weight:600;}
+input[type=number], input[type=text]{
+  font:inherit; font-size:13px; color:var(--text); background:var(--bg3);
+  border:0.5px solid var(--line); border-radius:var(--r); padding:4px 6px;
+}
+input[type=number]{width:70px;}
+select{
+  font:inherit; font-size:13px; color:var(--text); background:var(--bg3);
+  border:0.5px solid var(--line); border-radius:var(--r); padding:4px 6px;
+}
+label.chk{display:flex; align-items:center; gap:5px; font-size:12.5px; cursor:pointer;}
+.swatch{
+  width:22px; height:22px; border-radius:6px; border:2px solid transparent;
+  cursor:pointer; padding:0; flex:none;
+}
+.swatch.sel{border-color:var(--text);}
+/* 選択中の間隔（プリセット一致ならボタン、自由入力なら入力欄）を青で強調 */
+.preset.sel{background:var(--bl); border-color:transparent; color:#fff; font-weight:600;}
+#spacingInp.sel{box-shadow:0 0 0 1.5px var(--bl); border-color:var(--bl); color:var(--bl); font-weight:700;}
+input[type=color]{
+  width:30px; height:24px; border:0.5px solid var(--line); border-radius:6px;
+  background:var(--bg3); padding:1px 2px; cursor:pointer;
+}
+input[type=range]{width:100px;}
+details{margin-top:2px;}
+summary{cursor:pointer; font-size:12.5px; color:var(--text2); font-weight:600;}
+details .hint{margin:6px 0;}
+/* ---- メイン ---- */
+#main{flex:1; display:flex; flex-direction:column; min-width:0;}
+#toolbar{
+  display:flex; align-items:center; gap:8px; padding:6px 12px;
+  background:var(--bg2); border-bottom:0.5px solid var(--line); flex:none; flex-wrap:wrap;
+}
+#toolbar .sep{width:0.5px; height:20px; background:var(--line);}
+#toolbar .lbl{font-size:12.5px; color:var(--text2); min-width:46px; text-align:center;}
+#pageInp{width:52px; text-align:center;}
+#guide{
+  padding:7px 14px; font-size:13px; font-weight:600; flex:none;
+  background:var(--am); color:#fff;
+}
+#stage{
+  flex:1; overflow:auto; position:relative; background:var(--bg3); padding:16px;
+}
+#canvasBox{position:relative; margin:0 auto; box-shadow:0 2px 10px rgba(0,0,0,.25); width:fit-content;}
+#cvBase{display:block; background:#fff;}
+#cvOv{position:absolute; left:0; top:0;}
+#cvOv.mode{cursor:crosshair;}
+#empty{
+  position:absolute; inset:16px; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:10px; text-align:center;
+  border:2px dashed var(--line); border-radius:var(--rl); color:var(--text3);
+}
+#empty .big{font-size:17px; font-weight:700; color:var(--text2);}
+#statusbar{
+  display:flex; justify-content:space-between; gap:12px; padding:4px 14px;
+  background:var(--bg2); border-top:0.5px solid var(--line); flex:none;
+  font-size:12px; color:var(--text2); flex-wrap:wrap;
+}
+/* ---- トースト ---- */
+#toast{
+  position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+  background:var(--text); color:var(--bg2); padding:8px 16px; border-radius:var(--rl);
+  font-size:13px; opacity:0; pointer-events:none; transition:opacity .25s;
+  max-width:80%; z-index:99; box-shadow:0 4px 14px rgba(0,0,0,.3);
+}
+#toast.show{opacity:1;}
+#toast.gn{background:var(--gn); color:#fff;}
+#toast.rd{background:var(--rd); color:#fff;}
+#toast.am{background:var(--am); color:#fff;}
+#toast.bl{background:var(--bl); color:#fff;}
+@media print{ #side,#toolbar,#statusbar,#guide,header{display:none!important;} }
+</style>
+</head>
+<body>
+<header>
+  <h1>モジュールグリッド</h1>
+  <span class="sub">PDF図面にモジュール線を引いて保存・印刷</span>
+</header>
+<div id="wrap">
+  <!-- ================= サイドバー ================= -->
+  <aside id="side">
+    <div class="card">
+      <h2>📄 ファイル</h2>
+      <div class="row">
+        <button id="btnOpen" class="primary">PDFを開く</button>
+        <span id="fileLbl" class="hint" style="margin:0; word-break:break-all;">未読み込み</span>
+      </div>
+      <div class="hint">この画面にドラッグ&amp;ドロップでも開けます。</div>
+      <div class="row" style="margin-top:6px;">
+        <button id="btnSaveWork" disabled>作業を保存</button>
+        <button id="btnOpenWork">作業を開く</button>
+      </div>
+      <div class="hint">「作業を保存」で、線・寸法線・階・基準を<b>1ファイルに保存</b>（PDFも同梱）。次回「作業を開く」で<b>続きから</b>編集できます。</div>
+    </div>
+
+    <div class="card">
+      <h2>🏢 図面・階</h2>
+      <div class="row">
+        <span style="font-size:12.5px;">表示中</span>
+        <select id="sheetSelect" style="flex:1;" disabled></select>
+      </div>
+      <div class="row" style="margin-top:6px;">
+        <span style="font-size:12.5px;">階名</span>
+        <input list="floorOptions" id="curLabelInp" style="width:84px;" placeholder="階" disabled>
+        <button id="btnCloseAll" disabled>全部閉じる</button>
+      </div>
+      <div class="row" style="margin-top:6px;">
+        <span style="font-size:12.5px;">線を転写→</span>
+        <select id="copyTarget" style="flex:1;" disabled></select>
+      </div>
+      <div class="row" style="margin-top:4px;">
+        <button id="btnCopyTo" disabled>そのまま転写</button>
+        <button id="btnCopyPlace" disabled>位置を指定して転写</button>
+      </div>
+      <div class="hint"><b>複数のPDF/ページ</b>をまとめて扱えます。上の<b>プルダウンで図面（1F/2F…）を切替</b>、階名は自由入力可。<b>「転写」</b>で今の図面の線を他の図面へコピー（1Fの通り芯を2Fへ等）。保存は元PDFごとに別ファイル。</div>
+    </div>
+
+    <div class="card">
+      <h2><span class="num">1</span>基準合わせ（縮尺）</h2>
+      <div class="row">
+        <button id="btnCalib2p">2点をクリックして計測</button>
+        <button id="btnAutoScale">図面から自動計測</button>
+      </div>
+      <div id="calibPanel" hidden>
+        <div class="row">
+          <span style="font-size:12.5px;">2点間の実寸</span>
+          <input type="number" id="distInp" min="1" step="any" placeholder="3640"> mm
+          <button id="btnCalibApply" class="primary">確定</button>
+        </div>
+        <div class="row" style="margin-top:4px;">
+          <span style="font-size:12.5px;">またはマス数</span>
+          <input type="number" id="cellsInp" min="0.5" step="0.5" placeholder="4" style="width:64px;"> マス × <span id="cellsModLbl">910</span> mm
+        </div>
+      </div>
+      <label class="chk"><input type="checkbox" id="axisSnapChk" checked>水平・垂直に自動補正する</label>
+      <div class="row" style="margin-top:8px;">
+        <span style="font-size:12.5px;">または縮尺で指定：1/</span>
+        <input type="number" id="scaleInp" min="1" step="any" value="100">
+        <button id="btnScaleApply">適用</button>
+      </div>
+      <div id="calibStatus" class="status ng">未設定</div>
+      <div class="hint">おすすめは<b>「図面から自動計測」</b>（寸法数字の並びから実効縮尺を検出。A4縮小印刷されたPDFも正しく合います）。2点計測は<b>できるだけ離れた</b>通り芯の交点2つ（スナップON）で。近い2点だと僅かなクリック誤差が端で大きなズレになります。縮尺の直接指定は、図面が用紙どおりの原寸で出力されている場合だけ正確です。</div>
+    </div>
+
+    <div class="card">
+      <label class="chk"><input type="checkbox" id="snapChk" checked>🧲 PDFの既存の線に吸着（スナップ）</label>
+      <div id="snapStatus" class="hint" style="margin-top:2px;">CADから出力したベクトルPDFで、端点・交点・線上にカーソルが吸い付きます（スキャン画像PDFには線データが無く効きません）。</div>
+    </div>
+
+    <div class="card">
+      <h2><span class="num">2</span>モジュール線（2点で引いて複製）</h2>
+      <div class="row">
+        <button id="btnAddGrid">線を追加（2点で1本）</button>
+        <button id="btnUndoGrid" disabled>直前の線を取消</button>
+        <button id="btnClearGrid" disabled>このページ全消去</button>
+      </div>
+      <div id="originStatus" class="status ng">未設定</div>
+      <div id="gridList"></div>
+      <div class="hint"><b>①1点目 → ②2点目</b>で線を1本引き（水平/垂直に自動スナップ）、続けて<b>複製したい側をクリック</b>で間隔ぶん平行コピー（JW_CAD複線・連続OK・右クリックで1本戻す・Escで完了）。間隔（下の設定）を変えて別の線を引けば重ねられます。縦横は別々に引いてください。</div>
+      <label class="chk" style="margin-top:6px;"><input type="checkbox" id="dupAdjustChk">🧲 複製線を近くのPDFの線に合わせて微調整（±25mmまで・線リストの「補正解除」で戻せます）</label>
+      <label class="chk"><input type="checkbox" id="axisChk" checked>🔤 通り芯の符号を表示（横=数字／縦=いろは）</label>
+    </div>
+
+    <div class="card">
+      <h2><span class="num">3</span>線の設定</h2>
+      <div class="row">
+        <span style="font-size:12.5px;">間隔</span>
+        <button class="preset" data-mm="910">910</button>
+        <button class="preset" data-mm="1000">1000</button>
+        <input type="number" id="spacingInp" min="50" max="5000" step="any" value="910"> mm
+      </div>
+      <label class="chk"><input type="checkbox" id="halfChk">半モジュール線も表示（破線）</label>
+      <div class="row" style="margin-top:6px;">
+        <span style="font-size:12.5px;">色</span>
+        <button class="swatch sel" data-c="#d32f2f" style="background:#d32f2f" title="赤"></button>
+        <button class="swatch" data-c="#1565c0" style="background:#1565c0" title="青"></button>
+        <button class="swatch" data-c="#2e7d32" style="background:#2e7d32" title="緑"></button>
+        <button class="swatch" data-c="#c2185b" style="background:#c2185b" title="マゼンタ"></button>
+        <button class="swatch" data-c="#000000" style="background:#000000" title="黒"></button>
+        <input type="color" id="colorInp" value="#d32f2f" title="好きな色">
+      </div>
+      <div class="row">
+        <span style="font-size:12.5px;">太さ</span>
+        <select id="widthSel">
+          <option value="0.4">細</option>
+          <option value="0.8" selected>中</option>
+          <option value="1.5">太</option>
+        </select>
+        <span style="font-size:12.5px;">濃さ</span>
+        <input type="range" id="opacityRng" min="20" max="100" value="80">
+        <span id="opacityLbl" style="font-size:12px; color:var(--text2);">80%</span>
+      </div>
+      <div class="hint">間隔は<b>次に引く線・次の複製</b>から適用。<b>複製の途中で変えれば683などの変則スパンもそのまま引けます</b>（リストに「変則◯」と表示）。色・太さ・濃さは<b>全部の線に即時反映</b>。</div>
+    </div>
+
+    <div class="card">
+      <h2>📏 寸法線</h2>
+      <div class="row">
+        <button id="btnAddDim">寸法線を追加（2点）</button>
+        <button id="btnUndoDim" disabled>直前を取消</button>
+        <button id="btnClearDim" disabled>このページ全消去</button>
+      </div>
+      <div class="hint">2点をクリックすると、その間の<b>実寸(mm)</b>を自動計算して寸法線＋数値で表示（矢印付き・保存PDFにも入ります）。連続で引けます・Escで完了。※先に「基準合わせ」で縮尺の設定が必要です。</div>
+    </div>
+
+    <div class="card">
+      <h2><span class="num">4</span>出力</h2>
+      <div class="row">
+        <button id="btnSave" class="primary" disabled>線入りPDFで保存</button>
+        <button id="btnPrint" disabled>印刷</button>
+      </div>
+      <div class="hint">印刷は線入りPDFを新しいタブで開きます。そのまま Ctrl+P で印刷してください。</div>
+    </div>
+
+    <div class="card">
+      <details>
+        <summary>使い方ガイド</summary>
+        <div class="hint">
+          <b>▼ 基本の流れ</b><br>
+          ① PDFを開く（複数PDF・複数ページOK。ファイル名から1F/2Fを自動判定）<br>
+          ② 「基準合わせ」で縮尺を設定。おすすめは<b>「図面から自動計測」</b>（寸法数字の並びから実効縮尺を検出）。2点計測なら<b>離れた2点</b>をクリック→実寸mmか<b>マス数</b>を入力。<br>
+          ③ 「線を追加」で通り芯を2点クリック→1本引き、続けて<b>引きたい側をクリック</b>で平行コピー（連続OK・右クリックで1本戻す・Escで完了）。縦横は別々に。<b>複製の途中で「線の設定」の間隔を変えると、次の1本はその間隔で入ります</b>（683などの変則スパン対応）。「🧲微調整」にチェックを入れたときだけ、複製線が近くのPDFの線に吸着します（±25mmまで・既定OFF・線リストの「補正解除」で戻せます）。<br>
+          ④ 「線入りPDFで保存」または「印刷」<br><br>
+          <b>▼ 図面・階</b>：プルダウンで図面（1F/2F…）を切替。階名は自由入力可。<b>転写</b>で今の線を他の階へコピー（「位置を指定して転写」なら転写先で基準点クリックで位置合わせ）。<br>
+          <b>▼ 寸法線</b>：「寸法線を追加」→2点クリックで実寸(mm)を自動表示。<br>
+          <b>▼ 通り芯符号</b>：横=数字（左側）・縦=いろは（下側）を自動表示。<br>
+          <b>▼ PDFの線に吸着</b>：ベクトルPDFなら端点・交点・線上にカーソルが吸い付く（水色枠）。<br>
+          <b>▼ 保存/印刷</b>：「作業を保存」で線・寸法・階・基準をPDFごと1ファイルに保存→「作業を開く」で続きから。<b>印刷は全図面を1度にまとめて</b>開きます（符号・寸法も含む）。<br><br>
+          ・拡大＝マウスホイール（カーソル中心）／上下移動＝Shift+ホイール<br>
+          ・画面移動＝Spaceを押しながらドラッグ、またはマウス中ボタン<br>
+          ・Esc／右クリックで操作を中止・完了
+        </div>
+      </details>
+    </div>
+  </aside>
+
+  <!-- ================= メイン ================= -->
+  <main id="main">
+    <div id="toolbar">
+      <button id="btnPrev" disabled>◀</button>
+      <input type="number" id="pageInp" min="1" value="1" disabled>
+      <span class="lbl" id="pageTotal">/ -</span>
+      <button id="btnNext" disabled>▶</button>
+      <div class="sep"></div>
+      <button id="btnZoomOut" disabled>−</button>
+      <span class="lbl" id="zoomLbl">100%</span>
+      <button id="btnZoomIn" disabled>＋</button>
+      <button id="btnFit" disabled>幅に合わせる</button>
+    </div>
+    <div id="guide" hidden></div>
+    <div id="stage">
+      <div id="empty">
+        <div class="big">ここにPDF図面をドラッグ&amp;ドロップ</div>
+        <div>または左上の「PDFを開く」ボタンから選択してください</div>
+      </div>
+      <div id="canvasBox" hidden>
+        <canvas id="cvBase"></canvas>
+        <canvas id="cvOv"></canvas>
+      </div>
+    </div>
+    <div id="statusbar">
+      <span id="statusL">ファイル未読み込み</span>
+      <span id="statusR"></span>
+    </div>
+  </main>
+</div>
+<input type="file" id="fileInp" accept="application/pdf,.pdf" multiple hidden>
+<input type="file" id="workInp" accept="application/json,.json" hidden>
+<datalist id="floorOptions">
+  <option value="1F"></option><option value="2F"></option><option value="3F"></option>
+  <option value="4F"></option><option value="屋根伏図"></option><option value="基礎伏図"></option><option value="配置図"></option>
+</datalist>
+<div id="toast"></div>
+
+<script src="lib/pdf.min.js"></script>
+<script src="lib/pdf.worker.min.js"></script>
+<script src="lib/pdf-lib.min.js"></script>
+<script>
+'use strict';
+/* =========================================================
+   モジュールグリッド 本体
+   座標系メモ：
+   ・「vp1座標」= PDF.js の scale=1 ビューポート座標（左上原点・下向きy・回転適用済み）
+     scale=1 では 1px = 1pt(1/72インチ) なので、vp1の距離 = PDFポイント距離。
+   ・画面(canvas)は vp1 × (ズーム×devicePixelRatio)。
+   ・PDF保存時は viewport.convertToPdfPoint() で vp1 → PDFユーザー空間へ変換
+     （ページ回転があっても正しい位置に描ける）。
+   ========================================================= */
+
+// file:// で開いたときは Worker が使えないため、pdf.worker.min.js を
+// 通常のscriptとして読み込み済み（PDF.jsが自動でメインスレッド処理に切替える）
+if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
+
+// ---------- 状態 ----------
+const S = {
+  pdfDoc: null,       // PDF.js のドキュメント
+  srcBytes: null,     // 元PDFのバイト列（pdf-lib保存用に保持）
+  fileName: '',
+  pageNum: 1,
+  pageCount: 0,
+  zoom: 1,
+  vp1: null,          // 現在ページの scale=1 ビューポート
+  renderTask: null,
+  mode: null,         // 'c1' | 'c2' | 'g1' | 'g2' | null
+  calib: { p1: null, p2: null },  // 計測中の2点（vp1座標）
+  mmPerPt: null,      // 校正結果：1pt あたりの実寸mm
+  grids: {},          // ページ番号 -> [ 線family ] 2点で引いた線＋平行複製（複数可）
+  pending: null,      // 線の1点目（vp1座標）。2点目クリック待ち
+  previewB: null,     // 作成中プレビュー用の現在マウス位置（vp1座標）
+  activeIdx: -1,      // 複製中の対象family（grids[pageNum]内の添字）
+  hoverSide: 0,       // 複製中：マウスがどちら側か（+1/-1/0）
+  labels: {},         // ページ番号 -> 階ラベル（1F/2F等・自由入力可）
+  dims: {},           // ページ番号 -> [ {ax,ay,bx,by} ] 寸法線（アクティブPDFの鏡）
+  paste: null,        // 位置合わせ転写の途中データ {grids, srcRef:{x,y}, mmPerPt}
+  snapOn: true,       // PDFの既存線への吸着ON/OFF
+  dupAdjust: false,   // 複製線をPDFの線に合わせて微調整するか（既定OFF・誤吸着があるため任意）
+  snapHit: null,      // 吸着中の点（vp1・インジケータ表示用）
+  axisLabelOn: true,  // 通り芯符号（横=数字／縦=いろは）の表示
+  renderDpr: null,    // ベース画像を描いたときの devicePixelRatio（オーバーレイと揃えるため）
+  docs: [],           // 読み込んだPDF群 [{doc,srcBytes,fileName,pageCount,pageNum,grids,dims,labels,mmPerPt}]
+  curDoc: -1,         // アクティブなPDFの添字（S.pdfDoc等はこのPDFの鏡）
+  spacing: 910,
+  showHalf: false,
+  color: '#d32f2f',
+  widthPt: 0.8,
+  opacity: 0.8,
+  axisSnap: true,
+  busy: false,
+};
+
+// ---------- 要素参照 ----------
+const $ = id => document.getElementById(id);
+const stage = $('stage'), canvasBox = $('canvasBox'), cvBase = $('cvBase'), cvOv = $('cvOv');
+const emptyBox = $('empty'), guide = $('guide'), toastEl = $('toast');
+
+// ---------- 設定の保存・復元（線の好みだけ記憶） ----------
+function saveSettings(){
+  try{
+    localStorage.setItem('modgrid.settings', JSON.stringify({
+      spacing:S.spacing, showHalf:S.showHalf, color:S.color,
+      widthPt:S.widthPt, opacity:S.opacity, axisSnap:S.axisSnap,
+      axisLabelOn:S.axisLabelOn, dupAdjust:S.dupAdjust
+    }));
+  }catch(e){}
+}
+function loadSettings(){
+  try{
+    const j = JSON.parse(localStorage.getItem('modgrid.settings') || 'null');
+    if(!j) return;
+    if(j.spacing>0) S.spacing = j.spacing;
+    S.showHalf = !!j.showHalf;
+    if(/^#[0-9a-f]{6}$/i.test(j.color||'')) S.color = j.color;
+    if(j.widthPt>0) S.widthPt = j.widthPt;
+    if(j.opacity>=0.2 && j.opacity<=1) S.opacity = j.opacity;
+    S.axisSnap = j.axisSnap !== false;
+    S.axisLabelOn = j.axisLabelOn !== false;
+    S.dupAdjust = !!j.dupAdjust;   // 既定OFF
+  }catch(e){}
+}
+
+// ---------- 小物 ----------
+let toastTimer = null;
+function toast(msg, kind){
+  toastEl.textContent = msg;
+  toastEl.className = 'show' + (kind ? ' ' + kind : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>{ toastEl.className=''; }, 4000);
+}
+function hexToRgb01(hex){
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  const n = parseInt(m ? m[1] : 'd32f2f', 16);
+  return { r:((n>>16)&255)/255, g:((n>>8)&255)/255, b:(n&255)/255 };
+}
+function fmtMm(v){ return (Math.round(v*10)/10).toLocaleString(); }
+
+// 校正結果から「約1/100」のような縮尺表記を作る
+function scaleText(){
+  if(!S.mmPerPt) return '';
+  const denom = S.mmPerPt * 72 / 25.4;   // 1/N の N
+  const r = Math.round(denom);
+  const label = Math.abs(denom - r) < 0.6 ? ('約 1/' + r) : ('1/' + denom.toFixed(1));
+  return label + '（1pt=' + S.mmPerPt.toFixed(3) + 'mm）';
+}
+
+// ---------- 線family の取得・作成（1ページに複数の線＝2点で引いた基準線＋平行複製） ----------
+// family = { ax,ay,bx,by, horizontal, spacing, pos, neg, offs?, spans? }
+//   (ax,ay)-(bx,by)=基準線（水平/垂直にスナップ済み）／pos,neg=+側/−側の複製本数
+//   offs  = { k: オフセットpt } 複製k本目の吸着補正（PDFの線に合わせた微調整・無ければ0）
+//   spans = { k: 間隔mm } 複製k本目の変則スパン（複製中に間隔設定を変えた場合・無ければspacing）
+function gridsOf(n){ return S.grids[n] || []; }
+function anyGrid(){ return Object.values(S.grids).some(a => a && a.length); }
+// 2点から基準線familyを作る（優勢な軸へスナップ）。短すぎるときは null
+function makeFamily(a, b){
+  const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y);
+  const horizontal = dx >= dy;
+  if((horizontal ? dx : dy) < 2) return null;
+  return horizontal
+    ? { ax:a.x, ay:a.y, bx:b.x, by:a.y, horizontal:true,  spacing:S.spacing, pos:0, neg:0 }
+    : { ax:a.x, ay:a.y, bx:a.x, by:b.y, horizontal:false, spacing:S.spacing, pos:0, neg:0 };
+}
+// 点pが基準線のどちら側か（+1/−1/0）。水平線ならy、垂直線ならxで判定
+function familySide(f, p){
+  const d = f.horizontal ? (p.y - f.ay) : (p.x - f.ax);
+  return Math.abs(d) < 0.5 ? 0 : (d > 0 ? 1 : -1);
+}
+// k本目の複製線の吸着補正量（pt）。未補正なら0
+function lineOff(f, k){ return (f.offs && f.offs[k]) || 0; }
+// i本目のスパンmm（複製時に間隔設定を変えた「変則スパン」は f.spans={k:mm} に記録。無ければ基本間隔）
+function spanMm(f, i){ return (f.spans && f.spans[i]) || f.spacing; }
+// k本目の複製線の位置（vp1のyまたはx）。スパンを1本ずつ積み上げる。k=◯.5（半モジュール）は両隣の中間
+function linePos(f, k, mp){
+  if(!Number.isInteger(k)) return (linePos(f, Math.floor(k), mp) + linePos(f, Math.ceil(k), mp)) / 2;
+  let pos = f.horizontal ? f.ay : f.ax;
+  if(k > 0){ for(let i = 1; i <= k; i++) pos += spanMm(f, i) / mp; }
+  else if(k < 0){ for(let i = -1; i >= k; i--) pos -= spanMm(f, i) / mp; }
+  return pos + lineOff(f, k);
+}
+
+// ---------- 寸法線（2点で実寸mmを自動計測） ----------
+const DIMCOL = '#ff6f00';   // 寸法線の色（モジュール線と区別できるオレンジ）
+function dimsOf(n){ return S.dims[n] || []; }
+function anyDim(){ return Object.values(S.dims).some(a => a && a.length); }
+function anyDimIn(d){ return Object.values(d.dims).some(a => a && a.length); }
+function addDim(a, b){
+  if(Math.hypot(b.x - a.x, b.y - a.y) < 2) return false;   // 短すぎる
+  (S.dims[S.pageNum] = S.dims[S.pageNum] || []).push({ ax:a.x, ay:a.y, bx:b.x, by:b.y });
+  return true;
+}
+// 2点の実寸mm（校正必須）
+function dimMm(dm){ return Math.hypot(dm.bx - dm.ax, dm.by - dm.ay) * (S.mmPerPt || 0); }
+
+// ---------- ファイル読み込み（複数PDF対応） ----------
+// 複数のPDFファイルをまとめて追加（ドロップ・複数選択）
+async function loadFiles(files){
+  const pdfs = [...files].filter(f => /\.pdf$/i.test(f.name) || f.type === 'application/pdf');
+  if(!pdfs.length){ toast('PDFファイルを選んでください', 'rd'); return; }
+  try{
+    busy(true);
+    for(const f of pdfs){
+      const buf = new Uint8Array(await f.arrayBuffer());
+      await addDoc(buf, f.name);
+    }
+    toast(pdfs.length > 1
+      ? pdfs.length + '個のPDFを追加しました。「図面・階」で各ページの階(1F/2F…)を選べます'
+      : '読み込みました：' + pdfs[0].name, 'gn');
+  }catch(err){
+    console.error(err); toast('読み込みに失敗しました：' + (err && err.message || err), 'rd');
+  }finally{ busy(false); }
+}
+// バイト列からPDFを1つ追加してアクティブにする（検証用にも使う共通処理）
+async function addDoc(bytes, name){
+  const src = bytes.slice();                          // pdf-lib用に元データを別に保持
+  const doc = await pdfjsLib.getDocument({ data: bytes }).promise;  // bytesはdetachされる
+  const base = floorFromName(name); const bm = base && base.match(/^(\d+)F$/);
+  const labels = {};
+  for(let i = 1; i <= doc.numPages; i++){
+    labels[i] = bm ? (parseInt(bm[1]) + (i-1)) + 'F' : (base && i === 1 ? base : defaultFloor(i));
+  }
+  S.docs.push({ doc, srcBytes: src, fileName: name, pageCount: doc.numPages,
+                pageNum: 1, grids: {}, dims: {}, labels, mmPerPt: null });
+  await activateDoc(S.docs.length - 1);
+}
+// 検証用/プログラム用：全部閉じてから1つ読み込む
+async function loadBytes(bytes, name){ closeAllDocs(); await addDoc(bytes, name); }
+// アクティブPDFの状態(縮尺・表示ページ)を控えへ保存（grids/labelsは参照なので自動保存）
+function syncActive(){
+  const d = S.docs[S.curDoc];
+  if(d){ d.mmPerPt = S.mmPerPt; d.pageNum = S.pageNum; }
+}
+// モードの見た目だけを解除（ガイド・ボタン点灯・カーソル）。S.paste等の状態は触らない
+function clearModeUI(){
+  guide.hidden = true;
+  cvOv.classList.remove('mode');
+  cvOv.style.cursor = '';
+  $('btnCalib2p').classList.remove('mode-on');
+  $('btnAddGrid').classList.remove('mode-on');
+  $('btnAddDim').classList.remove('mode-on');
+}
+// アクティブPDFを切り替える（S.pdfDoc等をそのPDFの内容へ差し替えて表示）
+async function activateDoc(i){
+  if(i < 0 || i >= S.docs.length) return;
+  syncActive();
+  S.curDoc = i;
+  const d = S.docs[i];
+  S.pdfDoc = d.doc; S.srcBytes = d.srcBytes; S.fileName = d.fileName;
+  S.pageCount = d.pageCount; S.pageNum = d.pageNum;
+  S.grids = d.grids; S.dims = d.dims; S.labels = d.labels; S.mmPerPt = d.mmPerPt;   // grids/dims/labelsは参照で共有
+  S.mode = null; S.calib = { p1:null, p2:null };
+  S.pending = null; S.previewB = null; S.activeIdx = -1; S.hoverSide = 0;
+  clearModeUI();
+  emptyBox.hidden = true; canvasBox.hidden = false;
+  $('fileLbl').textContent = d.fileName + (S.docs.length > 1 ? '（他' + (S.docs.length - 1) + '件）' : '');
+  $('pageInp').value = S.pageNum; $('pageTotal').textContent = '/ ' + S.pageCount;
+  $('calibPanel').hidden = true;
+  const p = await d.doc.getPage(S.pageNum);
+  S.vp1 = p.getViewport({ scale: 1 });
+  S.zoom = Math.max(0.15, Math.min(3, (stage.clientWidth - 40) / S.vp1.width));
+  await renderPage();
+  updateAll();
+}
+// 指定PDF(di)・ページ(p)へ切替
+async function gotoSheet(di, p){
+  if(di !== S.curDoc) await activateDoc(di);
+  await gotoPage(p);
+  updateAll();
+}
+// PDFを全部閉じて空状態へ
+function closeAllDocs(){
+  S.docs = []; S.curDoc = -1;
+  S.pdfDoc = null; S.srcBytes = null; S.fileName = '';
+  S.pageNum = 1; S.pageCount = 0; S.vp1 = null;
+  S.grids = {}; S.dims = {}; S.labels = {}; S.mmPerPt = null;
+  S.mode = null; S.pending = null; S.previewB = null; S.activeIdx = -1; S.hoverSide = 0;
+  S.calib = { p1:null, p2:null };
+  $('calibPanel').hidden = true;
+  clearModeUI();
+  canvasBox.hidden = true; emptyBox.hidden = false;
+  $('fileLbl').textContent = '未読み込み';
+  $('pageTotal').textContent = '/ -';
+  updateAll();
+}
+// あるPDFに線(family)が1つでもあるか
+function anyGridIn(d){ return Object.values(d.grids).some(a => a && a.length); }
+
+// ---------- 作業の保存/読み込み（PDF埋め込みで自己完結・後で続きから） ----------
+function bytesToB64(bytes){
+  let bin = ''; const chunk = 0x8000;
+  for(let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  return btoa(bin);
+}
+function b64ToBytes(b64){
+  const bin = atob(b64); const out = new Uint8Array(bin.length);
+  for(let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function pad2(n){ return String(n).padStart(2, '0'); }
+function workName(){
+  const t = new Date();
+  return 'モジュール作業_' + t.getFullYear() + pad2(t.getMonth()+1) + pad2(t.getDate()) + '_' + pad2(t.getHours()) + pad2(t.getMinutes()) + '.json';
+}
+// 選択中の間隔を色で示す（910/1000プリセットに一致→そのボタン、それ以外→自由入力欄）
+function syncSpacingSel(){
+  let hit = false;
+  document.querySelectorAll('.preset').forEach(b => {
+    const on = +b.dataset.mm === S.spacing;
+    b.classList.toggle('sel', on);
+    if(on) hit = true;
+  });
+  $('spacingInp').classList.toggle('sel', !hit);
+}
+// 表示設定(間隔/色/太さ/濃さ/半モジュール/スナップ)をUIへ反映
+function syncSettingsToUI(){
+  $('spacingInp').value = S.spacing;
+  syncSpacingSel();
+  $('halfChk').checked = S.showHalf;
+  $('colorInp').value = S.color;
+  document.querySelectorAll('.swatch').forEach(s => s.classList.toggle('sel', s.dataset.c === S.color));
+  $('widthSel').value = String(S.widthPt);
+  $('opacityRng').value = Math.round(S.opacity * 100);
+  $('opacityLbl').textContent = Math.round(S.opacity * 100) + '%';
+  $('axisSnapChk').checked = S.axisSnap;
+  $('snapChk').checked = S.snapOn;
+  $('dupAdjustChk').checked = S.dupAdjust;
+  $('axisChk').checked = S.axisLabelOn;
+}
+// 現在の作業を1つのオブジェクトに（PDFはbase64で埋め込み）
+function dumpWork(){
+  syncActive();
+  return {
+    format: 'modgrid-work', version: 1,
+    spacing: S.spacing, color: S.color, widthPt: S.widthPt, opacity: S.opacity, showHalf: S.showHalf,
+    axisLabelOn: S.axisLabelOn,
+    docs: S.docs.map(d => ({
+      fileName: d.fileName, pageCount: d.pageCount, pageNum: d.pageNum, mmPerPt: d.mmPerPt,
+      labels: d.labels, grids: d.grids, dims: d.dims, pdf: bytesToB64(d.srcBytes)
+    }))
+  };
+}
+// オブジェクトから作業を復元
+async function restoreWork(data){
+  if(!data || data.format !== 'modgrid-work' || !Array.isArray(data.docs)) throw new Error('作業ファイルの形式が違います');
+  closeAllDocs();
+  if(data.spacing > 0) S.spacing = data.spacing;
+  if(/^#[0-9a-f]{6}$/i.test(data.color || '')) S.color = data.color;
+  if(data.widthPt > 0) S.widthPt = data.widthPt;
+  if(data.opacity >= 0.2 && data.opacity <= 1) S.opacity = data.opacity;
+  S.showHalf = !!data.showHalf;
+  if('axisLabelOn' in data) S.axisLabelOn = !!data.axisLabelOn;   // 古い作業ファイルにはキーが無い→既定のまま
+  syncSettingsToUI();
+  for(const dd of data.docs){
+    const bytes = b64ToBytes(dd.pdf);
+    const doc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+    S.docs.push({
+      doc, srcBytes: bytes, fileName: dd.fileName || 'restored.pdf',
+      pageCount: dd.pageCount || doc.numPages, pageNum: dd.pageNum || 1,
+      grids: dd.grids || {}, dims: dd.dims || {}, labels: dd.labels || {},
+      mmPerPt: (dd.mmPerPt != null ? dd.mmPerPt : null)
+    });
+  }
+  if(S.docs.length) await activateDoc(0);
+}
+async function saveWork(){
+  try{
+    busy(true);
+    if(!S.docs.length){ toast('保存する図面がありません', 'am'); return; }
+    const json = JSON.stringify(dumpWork());
+    const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+    const a = document.createElement('a'); a.href = url; a.download = workName();
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 60000);
+    toast('作業を保存しました：' + workName() + '（このファイルを開けば続きから編集できます）', 'gn');
+  }catch(err){ console.error(err); toast('作業の保存に失敗：' + (err && err.message || err), 'rd'); }
+  finally{ busy(false); }
+}
+async function loadWork(file){
+  try{
+    busy(true);
+    const data = JSON.parse(await file.text());
+    await restoreWork(data);
+    toast(S.docs.length + '件の図面を読み込みました（続きから編集できます）', 'gn');
+  }catch(err){ console.error(err); toast('作業の読み込みに失敗：' + (err && err.message || err), 'rd'); }
+  finally{ busy(false); }
+}
+// ページ順の既定の階ラベル
+function defaultFloor(i){ return ['1F','2F','3F','4F','5F'][i-1] || ('図面' + i); }
+// ファイル名から階を推定（1F/2F/地下/屋根/基礎/配置）。無ければnull
+function floorFromName(name){
+  const s = String(name || '');
+  let m;
+  if((m = s.match(/(?:^|[^0-9])(\d+)\s*(?:F|Ｆ|階)/i))) return m[1] + 'F';
+  if(/地下|B\s*1|B1F/i.test(s)) return 'B1F';
+  if(/屋根|RF|R階/i.test(s)) return '屋根伏図';
+  if(/基礎伏/.test(s)) return '基礎伏図';
+  if(/配置/.test(s)) return '配置図';
+  return null;
+}
+
+// ---------- 描画 ----------
+let renderSeq = 0;
+async function renderPage(){
+  if(!S.pdfDoc) return;
+  const seq = ++renderSeq;
+  const page = await S.pdfDoc.getPage(S.pageNum);
+  if(seq !== renderSeq) return;
+  S.vp1 = page.getViewport({ scale: 1 });
+  const dpr = window.devicePixelRatio || 1;
+  S.renderDpr = dpr;   // オーバーレイ描画と同じ倍率を使うために控える
+  // 巨大キャンバス防止（辺8192px上限）
+  const maxZ = Math.min(6, 8192/(S.vp1.width*dpr), 8192/(S.vp1.height*dpr));
+  if(S.zoom > maxZ) S.zoom = maxZ;
+  if(S.zoom < 0.15) S.zoom = 0.15;
+  const vp = page.getViewport({ scale: S.zoom * dpr });
+  cvBase.width = Math.floor(vp.width);  cvBase.height = Math.floor(vp.height);
+  cvOv.width   = cvBase.width;          cvOv.height   = cvBase.height;
+  const cssW = vp.width/dpr + 'px', cssH = vp.height/dpr + 'px';
+  cvBase.style.width = cssW; cvBase.style.height = cssH;
+  cvOv.style.width   = cssW; cvOv.style.height   = cssH;
+  if(S.renderTask){ try{ S.renderTask.cancel(); }catch(e){} }
+  const task = page.render({ canvasContext: cvBase.getContext('2d'), viewport: vp });
+  S.renderTask = task;
+  try{ await task.promise; }
+  catch(err){
+    if(err && (err.name === 'RenderingCancelledException' || /cancel/i.test(err.message||''))) return;
+    console.error(err); toast('表示エラー：' + (err && err.message || err), 'rd'); return;
+  }
+  if(seq !== renderSeq) return;
+  S.renderTask = null;
+  drawOverlay();
+  updateToolbar();
+}
+
+// 1つの線family（基準線＋平行複製）を画面に描く。hoverSide!=0で次の複製線をプレビュー
+function drawFamily(ctx, f, z, hoverSide, mmPerPt){
+  const mp = mmPerPt || S.mmPerPt;
+  if(!mp) return;
+  const stepVp = f.spacing / mp;               // vp1(pt)
+  const screenStep = stepVp * z;
+  // k番目の平行線（基準線=0）の画面座標セグメント（吸着補正offsも反映）
+  const stroke = (k) => {
+    if(f.horizontal){ const y=linePos(f, k, mp)*z; ctx.moveTo(f.ax*z, y); ctx.lineTo(f.bx*z, y); }
+    else { const x=linePos(f, k, mp)*z; ctx.moveTo(x, f.ay*z); ctx.lineTo(x, f.by*z); }
+  };
+  ctx.save();
+  ctx.strokeStyle = S.color;
+  // 半モジュール（隣り合う線の中間・破線）
+  if(S.showHalf && screenStep/2 >= 3){
+    ctx.globalAlpha = S.opacity * 0.55;
+    ctx.lineWidth = Math.max(1, S.widthPt * z * 0.6);
+    ctx.setLineDash([6,6]); ctx.beginPath();
+    for(let k = -f.neg; k <= f.pos-1; k++) stroke(k+0.5);
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+  // 基準線＋複製（k=-neg..pos）
+  ctx.globalAlpha = S.opacity;
+  ctx.lineWidth = Math.max(1, S.widthPt * z * 0.9);
+  ctx.beginPath();
+  for(let k = -f.neg; k <= f.pos; k++) stroke(k);
+  ctx.stroke();
+  drawMarker(ctx, f.ax*z, f.ay*z, '基点', z);
+  // 次に複製される線のプレビュー（複製中・マウスがある側）。位置は「今の間隔設定」で決まる
+  if(hoverSide){
+    ctx.globalAlpha = 0.55; ctx.lineWidth = Math.max(1, S.widthPt * z * 0.9);
+    ctx.setLineDash([5,4]); ctx.beginPath();
+    const kPrev = hoverSide > 0 ? f.pos : -f.neg;
+    const c = linePos(f, kPrev, mp) + (hoverSide > 0 ? 1 : -1) * (S.spacing / mp);
+    if(f.horizontal){ ctx.moveTo(f.ax*z, c*z); ctx.lineTo(f.bx*z, c*z); }
+    else { ctx.moveTo(c*z, f.ay*z); ctx.lineTo(c*z, f.by*z); }
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+  ctx.restore();
+}
+
+// 矢印の羽（点(x,y)から角度aへ向けて2本）
+function drawArrow(ctx, x, y, a, h){
+  ctx.beginPath();
+  ctx.moveTo(x, y); ctx.lineTo(x + h*Math.cos(a+0.42), y + h*Math.sin(a+0.42));
+  ctx.moveTo(x, y); ctx.lineTo(x + h*Math.cos(a-0.42), y + h*Math.sin(a-0.42));
+  ctx.stroke();
+}
+// 寸法線1本を画面に描く（線＋両端矢印＋実寸mm）。preview=作成中
+function drawDim(ctx, dm, z, preview, mmPerPt){
+  const mp = mmPerPt || S.mmPerPt;
+  const ax=dm.ax*z, ay=dm.ay*z, bx=dm.bx*z, by=dm.by*z;
+  ctx.save();
+  ctx.strokeStyle = DIMCOL; ctx.fillStyle = DIMCOL;
+  ctx.globalAlpha = preview ? 0.7 : 1;
+  ctx.lineWidth = Math.max(1, 1.1*z);
+  if(preview) ctx.setLineDash([5,4]);
+  ctx.beginPath(); ctx.moveTo(ax,ay); ctx.lineTo(bx,by); ctx.stroke();
+  ctx.setLineDash([]);
+  const ang = Math.atan2(by-ay, bx-ax); const h = Math.max(7, 6*z);
+  drawArrow(ctx, ax, ay, ang, h);            // A端（外向き）
+  drawArrow(ctx, bx, by, ang+Math.PI, h);    // B端
+  if(mp){
+    const txt = fmtMm(Math.hypot(dm.bx-dm.ax, dm.by-dm.ay) * mp);
+    const mx=(ax+bx)/2, my=(ay+by)/2;
+    const fs = Math.max(11, 10*z);
+    ctx.font = 'bold ' + fs + 'px sans-serif';
+    const w = ctx.measureText(txt).width;
+    ctx.globalAlpha = preview ? 0.8 : 0.95;
+    ctx.fillStyle = '#fff'; ctx.fillRect(mx - w/2 - 3, my - fs - 2, w + 6, fs + 4);
+    ctx.fillStyle = DIMCOL; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText(txt, mx, my - 4);
+  }
+  ctx.restore();
+}
+
+// 通り芯符号（横線→数字・縦線→いろは）
+const IROHA = 'いろはにほへとちりぬるをわかよたれそつねならむうゐのおくやまけふこえてあさきゆめみしゑひもせす';
+function computeAxisLabels(grids, mmPerPt){
+  if(!mmPerPt) return { h:[], v:[] };
+  const hMap=new Map(), vMap=new Map();
+  for(const f of grids){
+    if(f.horizontal){ const x0=Math.min(f.ax,f.bx),x1=Math.max(f.ax,f.bx);
+      for(let k=-f.neg;k<=f.pos;k++){ const y=linePos(f,k,mmPerPt), key=Math.round(y*2);
+        const e=hMap.get(key)||{y,x0:Infinity,x1:-Infinity}; e.x0=Math.min(e.x0,x0); e.x1=Math.max(e.x1,x1); hMap.set(key,e); } }
+    else { const y0=Math.min(f.ay,f.by),y1=Math.max(f.ay,f.by);
+      for(let k=-f.neg;k<=f.pos;k++){ const x=linePos(f,k,mmPerPt), key=Math.round(x*2);
+        const e=vMap.get(key)||{x,y0:Infinity,y1:-Infinity}; e.y0=Math.min(e.y0,y0); e.y1=Math.max(e.y1,y1); vMap.set(key,e); } }
+  }
+  const hArr=[...hMap.values()].sort((a,b)=>b.y-a.y);   // 下(大y)から上へ
+  const vArr=[...vMap.values()].sort((a,b)=>a.x-b.x);   // 左から右へ
+  const hLab=hArr.map((e,i)=>({...e, label: String(i+1)}));
+  const vLab=vArr.map((e,i)=>({...e, label: IROHA[i]||'?'}));
+  return { h:hLab, v:vLab };
+}
+function drawAxisLabels(ctx, grids, mmPerPt, z){
+  const { h, v } = computeAxisLabels(grids, mmPerPt);
+  if(!h.length && !v.length) return;
+  const r=Math.max(8,8*z), off=Math.max(14,13*z), fs=Math.max(11,10*z);
+  const W=ctx.canvas.width, H=ctx.canvas.height;
+  ctx.save();
+  ctx.font='bold '+fs+'px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.lineWidth=Math.max(1,z);
+  const chip=(cx,cy,label)=>{
+    cx=Math.max(r+1,Math.min(W-r-1,cx)); cy=Math.max(r+1,Math.min(H-r-1,cy));
+    ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
+    ctx.globalAlpha=0.92; ctx.fillStyle='#fff'; ctx.fill(); ctx.globalAlpha=1;
+    ctx.strokeStyle='#555'; ctx.stroke(); ctx.fillStyle='#222'; ctx.fillText(label,cx,cy);
+  };
+  for(const e of h) chip(e.x0*z - off, e.y*z, e.label);   // 横線：左端の外側
+  for(const e of v) chip(e.x*z, e.y1*z + off, e.label);   // 縦線：下端の外側
+  ctx.restore();
+}
+// 1シートの重ね描き（線＋寸法線＋符号）を任意ctx・任意zで（印刷の画像化に共用）
+function drawSheetOverlays(ctx, grids, dims, mmPerPt, z){
+  for(const f of grids) drawFamily(ctx, f, z, 0, mmPerPt);
+  for(const dm of dims) drawDim(ctx, dm, z, false, mmPerPt);
+  if(S.axisLabelOn) drawAxisLabels(ctx, grids, mmPerPt, z);
+}
+
+// オーバーレイ（格子・マーカー）を描き直す
+let dprTimer = null;
+function drawOverlay(){
+  const ctx = cvOv.getContext('2d');
+  ctx.clearRect(0, 0, cvOv.width, cvOv.height);
+  if(!S.vp1) return;
+  // ベース画像と同じ倍率で描く。画面の拡大率が変わっていたらベースを描き直す（ズレ防止）
+  const curDpr = window.devicePixelRatio || 1;
+  if(S.renderDpr && Math.abs(curDpr - S.renderDpr) > 0.001){
+    clearTimeout(dprTimer); dprTimer = setTimeout(()=>renderPage(), 150);
+  }
+  const z = S.zoom * (S.renderDpr || curDpr);
+
+  // --- モジュール線（各family：基準線＋平行複製） ---
+  if(S.mmPerPt){
+    const fams = gridsOf(S.pageNum);
+    fams.forEach((f, i) => drawFamily(ctx, f, z, (S.mode === 'dup' && i === S.activeIdx) ? S.hoverSide : 0));
+    // 基準線を引いている最中のプレビュー（1点目→現在マウス・水平/垂直スナップ）
+    if(S.mode === 'g2' && S.pending && S.previewB){
+      const pf = makeFamily(S.pending, S.previewB);
+      if(pf) drawFamily(ctx, pf, z, 0);
+    }
+    // 位置合わせ転写のプレビュー（控えの線をマウス位置へ平行移動して表示）
+    if(S.mode === 'paste' && S.paste && S.previewB){
+      const dx = S.previewB.x - S.paste.srcRef.x, dy = S.previewB.y - S.paste.srcRef.y;
+      for(const f of S.paste.grids){
+        drawFamily(ctx, Object.assign({}, f, { ax:f.ax+dx, bx:f.bx+dx, ay:f.ay+dy, by:f.by+dy }), z, 0);
+      }
+    }
+    // 通り芯符号（いろは/数字）
+    if(S.axisLabelOn) drawAxisLabels(ctx, gridsOf(S.pageNum), S.mmPerPt, z);
+  }
+  // --- 寸法線 ---
+  for(const dm of dimsOf(S.pageNum)) drawDim(ctx, dm, z, false);
+  if(S.mode === 'dim2' && S.pending && S.previewB){
+    drawDim(ctx, { ax:S.pending.x, ay:S.pending.y, bx:S.previewB.x, by:S.previewB.y }, z, true);
+  }
+  // --- 計測中の基準点 ---
+  if(S.calib.p1) drawCross(ctx, S.calib.p1.x*z, S.calib.p1.y*z, '①', z);
+  if(S.calib.p2) drawCross(ctx, S.calib.p2.x*z, S.calib.p2.y*z, '②', z);
+  if(S.calib.p1 && S.calib.p2){
+    ctx.save();
+    ctx.strokeStyle = '#ff9800'; ctx.lineWidth = Math.max(1, z);
+    ctx.setLineDash([8, 5]);
+    ctx.beginPath();
+    ctx.moveTo(S.calib.p1.x*z, S.calib.p1.y*z);
+    ctx.lineTo(S.calib.p2.x*z, S.calib.p2.y*z);
+    ctx.stroke();
+    ctx.restore();
+  }
+  // --- 吸着位置インジケータ（水色の四角） ---
+  if(S.snapHit){
+    const sx = S.snapHit.x*z, sy = S.snapHit.y*z, r = Math.max(5, 5*z);
+    ctx.save();
+    ctx.strokeStyle = '#00b8d4'; ctx.lineWidth = Math.max(1.5, z);
+    ctx.strokeRect(sx-r, sy-r, r*2, r*2);
+    ctx.restore();
+  }
+}
+function drawCross(ctx, x, y, label, z){
+  const s = Math.max(10, 7*z);
+  ctx.save();
+  ctx.strokeStyle = '#ff9800'; ctx.fillStyle = '#ff9800';
+  ctx.lineWidth = Math.max(1.5, z);
+  ctx.beginPath();
+  ctx.moveTo(x-s, y); ctx.lineTo(x+s, y);
+  ctx.moveTo(x, y-s); ctx.lineTo(x, y+s);
+  ctx.stroke();
+  ctx.font = 'bold ' + Math.max(12, 11*z) + 'px sans-serif';
+  ctx.fillText(label, x + s*0.5, y - s*0.5);
+  ctx.restore();
+}
+function drawMarker(ctx, x, y, label, z){
+  const r = Math.max(5, 4*z);
+  ctx.save();
+  ctx.globalAlpha = 0.95;
+  ctx.strokeStyle = S.color; ctx.fillStyle = S.color;
+  ctx.lineWidth = Math.max(1.5, z);
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(x, y, Math.max(1.5, r*0.25), 0, Math.PI*2); ctx.fill();
+  ctx.font = 'bold ' + Math.max(11, 10*z) + 'px sans-serif';
+  ctx.fillText(label, x + r + 3, y - r);
+  ctx.restore();
+}
+
+// ---------- クリック（計測・起点） ----------
+function vp1FromEvent(e){
+  const r = cvOv.getBoundingClientRect();
+  return { x: (e.clientX - r.left) / S.zoom, y: (e.clientY - r.top) / S.zoom };
+}
+cvOv.addEventListener('click', e => {
+  if(S.busy) return;
+  const p = pickPoint(e);
+  if(S.mode === 'c1'){
+    S.calib.p1 = p; S.calib.p2 = null;
+    setMode('c2');
+  }else if(S.mode === 'c2'){
+    S.calib.p2 = p;
+    setMode(null);
+    $('calibPanel').hidden = false;
+    $('cellsModLbl').textContent = fmtMm(S.spacing);
+    $('cellsInp').value = '';
+    $('distInp').focus();
+    guide.hidden = false;
+    guide.textContent = '左に2点間の実寸をmmで入力（または「マス数」に通り芯のマス数を入れると自動計算）して【確定】。例：4マスなら「4」→' + fmtMm(S.spacing * 4) + 'mm';
+  }else if(S.mode === 'g1'){
+    // 線の1点目を置く → 2点目待ちへ
+    S.pending = { x:p.x, y:p.y };
+    S.previewB = { x:p.x, y:p.y };
+    setMode('g2');
+  }else if(S.mode === 'g2'){
+    // 2点目 → 基準線を1本引いて、そのまま複製モードへ
+    const f = S.pending && makeFamily(S.pending, p);
+    if(f){
+      const arr = (S.grids[S.pageNum] = S.grids[S.pageNum] || []);
+      arr.push(f);
+      S.activeIdx = arr.length - 1;
+      S.pending = null; S.previewB = null;
+      setMode('dup');
+      updateAll();
+      toast('基準線を引きました。複製したい側をクリックで1本ずつ（右クリックで戻す・Escで完了）', 'gn');
+    }else{
+      toast('線が短すぎます。もう少し離れた2点目をクリックしてください', 'am');
+    }
+  }else if(S.mode === 'dup'){
+    // 複製：マウスのある側へ平行コピーを1本追加（連続クリック可）
+    const f = gridsOf(S.pageNum)[S.activeIdx];
+    if(f){
+      const side = familySide(f, p);
+      if(side !== 0){
+        const k = side > 0 ? ++f.pos : -(++f.neg);
+        // 新しい1本は「今の間隔設定」で入る。線の基本間隔と違えば変則スパンとして記録（683等）
+        if(S.spacing !== f.spacing){
+          (f.spans = f.spans || {})[k] = S.spacing;
+          toast('この1本は間隔 ' + fmtMm(S.spacing) + ' mm で入れました', 'bl');
+        }
+        const off = snapDupLine(f, k);   // 「微調整」ON時：近くのPDFの線へ吸着
+        if(off) toast('PDFの線に合わせて微調整（' + (off > 0 ? '+' : '') + fmtMm(off * S.mmPerPt) + ' mm）', 'bl');
+        updateAll();
+      }
+    }
+  }else if(S.mode === 'dim1'){
+    // 寸法線の1点目
+    S.pending = { x:p.x, y:p.y };
+    S.previewB = { x:p.x, y:p.y };
+    setMode('dim2');
+  }else if(S.mode === 'dim2'){
+    // 寸法線の2点目 → 確定（続けて次も引ける）
+    if(S.pending && addDim(S.pending, p)){
+      S.pending = null; S.previewB = null;
+      setMode('dim1');
+      updateAll();
+      toast('寸法線を追加しました（続けて引けます・Escで完了）', 'gn');
+    }else{
+      toast('2点が近すぎます。もう少し離してください', 'am');
+    }
+  }else if(S.mode === 'paste'){
+    // 位置合わせ転写：クリック点に合わせて配置を確定
+    finishPaste(p);
+  }
+  drawOverlay();
+});
+
+// モード切替（クリック待ち状態の管理）
+function setMode(m){
+  S.mode = m;
+  cvOv.classList.toggle('mode', !!m);
+  const msgs = {
+    c1: '基準①：長さの分かる【1点目】をクリック（通り芯の交点など）。2点は【できるだけ離す】ほど正確です',
+    c2: '基準②：【2点目】をクリックしてください',
+    g1: '線の【1点目】（通り芯の端など）をクリックしてください',
+    g2: '線の【2点目】をクリックしてください（水平・垂直に自動でそろえます・右クリックで取り消し）',
+    dup: '複製したい【側】をクリックで1本ずつ平行コピー（連続OK・右クリックで1本戻す・Escで完了）。途中で「線の設定」の間隔を変えると次の1本はその間隔で入ります',
+    dim1: '寸法線：測りたい【1点目】をクリックしてください',
+    dim2: '寸法線：【2点目】をクリック（実寸mmを自動表示・連続で引けます・Escで完了）',
+    paste: '転写先で【基準点】をクリック（1Fの最初の基点がそこに合うよう配置します・Escで中止）',
+  };
+  if(m){ guide.hidden = false; guide.textContent = msgs[m]; }
+  else { guide.hidden = true; }
+  $('btnCalib2p').classList.toggle('mode-on', m === 'c1' || m === 'c2');
+  $('btnAddGrid').classList.toggle('mode-on', m === 'g1' || m === 'g2' || m === 'dup');
+  $('btnAddDim').classList.toggle('mode-on', m === 'dim1' || m === 'dim2');
+  if(!m){ S.activeIdx = -1; S.hoverSide = 0; S.paste = null; S.snapHit = null; }
+}
+
+// ---------- 校正の確定 ----------
+function applyCalib(mm){
+  const p1 = S.calib.p1, p2 = S.calib.p2;
+  if(!p1 || !p2){ toast('先に2点をクリックしてください', 'am'); return; }
+  if(!(mm > 0)){ toast('実寸(mm)を入力してください', 'am'); return; }
+  let dx = p2.x - p1.x, dy = p2.y - p1.y;
+  if(S.axisSnap){
+    const ang = Math.atan2(Math.abs(dy), Math.abs(dx)) * 180 / Math.PI;
+    if(ang < 10) dy = 0;          // ほぼ水平 → 水平距離とみなす
+    else if(ang > 80) dx = 0;     // ほぼ垂直 → 垂直距離とみなす
+  }
+  const dist = Math.hypot(dx, dy);   // vp1座標の距離 = pt
+  if(dist < 2){ toast('2点が近すぎます。離れた2点で計測してください', 'rd'); return; }
+  S.mmPerPt = mm / dist;
+  S.calib = { p1:null, p2:null };
+  $('calibPanel').hidden = true;
+  guide.hidden = true;
+  updateAll();
+  toast('基準を設定しました：' + scaleText(), 'gn');
+}
+function applyScaleDirect(n){
+  if(!(n > 0)){ toast('縮尺の分母を入力してください（例：100）', 'am'); return; }
+  S.mmPerPt = n * 25.4 / 72;   // 1pt = 25.4/72 mm × 縮尺分母
+  S.calib = { p1:null, p2:null };
+  $('calibPanel').hidden = true;
+  updateAll();
+  toast('縮尺 1/' + n + ' として設定しました', 'gn');
+}
+
+// ---------- 図面からの自動計測（実効縮尺の検出） ----------
+// 方式1：寸法数字の並び。同じ数字（例「910」）が等間隔に3つ以上並ぶ寸法列を探す。
+// 同じ文字列どうしなら文字幅の影響が消え、隣の文字との間隔pt＝その寸法mmの図面上の実寸になる。
+async function detectScaleFromTexts(page, vp1){
+  const tc = await page.getTextContent();
+  const items = [];
+  for(const it of tc.items){
+    const s = (it.str || '').trim();
+    if(!/^[0-9][0-9,]{2,6}$/.test(s)) continue;
+    const mm = parseInt(s.replace(/,/g, ''), 10);
+    if(!(mm >= 100 && mm <= 20000)) continue;   // 寸法らしい値だけ
+    const t = vp1.convertToViewportPoint(it.transform[4], it.transform[5]);
+    // 文字の進行方向を「ビューポート座標」で判定（回転ページ /Rotate 90 等でも縦横を正しく区別）
+    const t2 = vp1.convertToViewportPoint(it.transform[4] + it.transform[0], it.transform[5] + it.transform[1]);
+    items.push({ s, mm, x: t[0], y: t[1], rot: Math.abs(t2[1] - t[1]) > Math.abs(t2[0] - t[0]) });
+  }
+  const cands = [];
+  for(const rot of [false, true]){
+    const g = new Map();   // 「同じ数字 × 同じ行(列)」でグループ化
+    for(const it of items){
+      if(it.rot !== rot) continue;
+      const key = it.s + '@' + Math.round((rot ? it.x : it.y) * 2);
+      const rec = g.get(key) || { mm: it.mm, vals: [] };
+      rec.vals.push(rot ? it.y : it.x);
+      g.set(key, rec);
+    }
+    for(const rec of g.values()){
+      if(rec.vals.length < 3) continue;
+      rec.vals.sort((a,b)=>a-b);
+      const difs = rec.vals.slice(1).map((v,i)=>v-rec.vals[i]);
+      const avg = difs.reduce((a,b)=>a+b, 0) / difs.length;
+      if(avg < 5) continue;
+      if(difs.some(d => Math.abs(d - avg) > Math.max(0.6, avg*0.02))) continue;   // 等間隔でない列は捨てる
+      cands.push({ mmPerPt: rec.mm / avg, votes: difs.length });
+    }
+  }
+  if(!cands.length) return null;
+  // 中央値の±1%に集まる候補だけで加重平均（外れ値＝寸法でない数字列を除外）
+  cands.sort((a,b)=>a.mmPerPt-b.mmPerPt);
+  const mid = cands[Math.floor(cands.length/2)].mmPerPt;
+  const near = cands.filter(c => Math.abs(c.mmPerPt - mid)/mid < 0.01);
+  const votes = near.reduce((a,c)=>a+c.votes, 0);
+  const mp = near.reduce((a,c)=>a+c.mmPerPt*c.votes, 0) / votes;
+  return { mmPerPt: mp, votes, src: '寸法数字の並び' };
+}
+// 方式2：ページを長く走る縦線・横線の等間隔ピッチ（伏図など、通り芯が線で入っている図面向け）
+function detectScaleFromLines(data, vp1){
+  if(!data || !data.segs.length) return null;
+  const W = vp1.width, H = vp1.height;
+  let best = null;
+  for(const horiz of [false, true]){
+    const cs = [];
+    for(const s of data.segs){
+      const isH = Math.abs(s[1]-s[3]) < 0.5, isV = Math.abs(s[0]-s[2]) < 0.5;
+      if(!horiz && isV && Math.abs(s[3]-s[1]) > H*0.25) cs.push(s[0]);
+      if(horiz && isH && Math.abs(s[2]-s[0]) > W*0.25) cs.push(s[1]);
+    }
+    cs.sort((a,b)=>a-b);
+    const merged = []; for(const c of cs){ if(!merged.length || c - merged[merged.length-1] > 1.5) merged.push(c); }
+    const hist = new Map();   // 隣どうしの間隔の最頻値
+    for(let i=1;i<merged.length;i++){ const k = Math.round((merged[i]-merged[i-1])*2)/2; if(k >= 5) hist.set(k, (hist.get(k)||0)+1); }
+    for(const [k,n] of hist){ if(n >= 3 && (!best || n > best.votes)) best = { pitch:k, votes:n }; }
+  }
+  return best ? { mmPerPt: S.spacing / best.pitch, votes: best.votes, src: '等間隔の通り芯線（間隔を' + fmtMm(S.spacing) + 'mmとみなす）' } : null;
+}
+async function autoScale(){
+  if(!S.pdfDoc){ toast('先にPDFを開いてください', 'am'); return; }
+  try{
+    busy(true);
+    const page = await S.pdfDoc.getPage(S.pageNum);
+    const vp1 = page.getViewport({ scale: 1 });
+    let r = await detectScaleFromTexts(page, vp1);
+    if(!r){ await ensureSnapData(); r = detectScaleFromLines(currentSnapData(), vp1); }
+    if(!r){ toast('自動計測できませんでした（画像PDFや寸法の少ない図面）。「2点をクリックして計測」をお使いください', 'am'); return; }
+    const denom = r.mmPerPt * 72 / 25.4;
+    const rd = Math.round(denom);
+    const lbl = Math.abs(denom - rd) < 0.6 ? ('約 1/' + rd) : ('1/' + denom.toFixed(1));
+    const common = [20,30,50,60,100,200].some(n => Math.abs(denom-n)/n < 0.03);
+    const msg = r.src + ' から、この図面の実効縮尺は ' + lbl + '（1pt=' + r.mmPerPt.toFixed(3) + 'mm・' + r.votes + '区間で一致）と検出しました。'
+      + (common ? '' : '\n※一般的な縮尺（1/50等）と違いますが、A3図面のA4縮小出力などではこれが正しい値です（図面内の寸法と一致するのはこちら）。')
+      + '\nこの基準を設定しますか？';
+    if(confirm(msg)){
+      S.mmPerPt = r.mmPerPt;
+      S.calib = { p1:null, p2:null };
+      $('calibPanel').hidden = true;
+      updateAll();
+      toast('図面から基準を設定しました：' + scaleText(), 'gn');
+    }
+  }catch(err){
+    console.error(err); toast('自動計測に失敗：' + (err && err.message || err), 'rd');
+  }finally{ busy(false); }
+}
+
+// ---------- PDF書き出し ----------
+async function buildAnnotatedPdf(d){
+  syncActive();                       // アクティブPDFの縮尺/ページを控えへ反映
+  d = d || S.docs[S.curDoc];
+  if(!d) throw new Error('PDFが読み込まれていません');
+  if(!d.mmPerPt) throw new Error('基準合わせ（縮尺）が未設定です');
+  const src = await PDFLib.PDFDocument.load(d.srcBytes, { ignoreEncryption: true });
+  const libPages = src.getPages();
+  const n = Math.min(libPages.length, d.pageCount);
+  const c = hexToRgb01(S.color);
+  const col = PDFLib.rgb(c.r, c.g, c.b);
+  const dcol = PDFLib.rgb(1, 0x6f/255, 0);   // 寸法線オレンジ
+  let font = null;
+  let drawn = 0;
+  for(let i = 1; i <= n; i++){
+    const grids = d.grids[i] || [];
+    const dims = d.dims[i] || [];
+    if(!grids.length && !dims.length) continue;
+    const page = await d.doc.getPage(i);
+    const vp1 = page.getViewport({ scale: 1 });
+    const lp = libPages[i-1];
+    // vp1座標の線分を PDFユーザー空間に変換して描く（回転ページでも正しい向きになる）
+    const seg = (x1, y1, x2, y2, opts) => {
+      const a = vp1.convertToPdfPoint(x1, y1);
+      const b = vp1.convertToPdfPoint(x2, y2);
+      lp.drawLine(Object.assign({
+        start: { x: a[0], y: a[1] }, end: { x: b[0], y: b[1] },
+        thickness: S.widthPt, color: col, opacity: S.opacity,
+      }, opts || {}));
+    };
+    // 各family：基準線＋平行複製（k=-neg..pos）を画面と同じに描く
+    for(const f of grids){
+      const step = f.spacing / d.mmPerPt;   // pt
+      if(step < 1) continue;                 // 異常値ガード
+      const line = (k, opts) => {
+        const c = linePos(f, k, d.mmPerPt);   // 吸着補正offsも画面と同じに反映
+        return f.horizontal ? seg(f.ax, c, f.bx, c, opts) : seg(c, f.ay, c, f.by, opts);
+      };
+      for(let k = -f.neg; k <= f.pos; k++) line(k);
+      if(S.showHalf && step/2 >= 1){
+        const hOpts = { thickness: Math.max(0.2, S.widthPt*0.6), opacity: S.opacity*0.6, dashArray: [3,3] };
+        for(let k = -f.neg; k <= f.pos-1; k++) line(k+0.5, hOpts);
+      }
+    }
+    // 寸法線（線＋両端矢印＋実寸mm）
+    if(dims.length){
+      if(!font) font = await src.embedFont(PDFLib.StandardFonts.Helvetica);
+      const dopt = { color: dcol, thickness: 0.8, opacity: 1 };
+      for(const dm of dims){
+        seg(dm.ax, dm.ay, dm.bx, dm.by, dopt);
+        const A = vp1.convertToPdfPoint(dm.ax, dm.ay), B = vp1.convertToPdfPoint(dm.bx, dm.by);
+        const ang = Math.atan2(B[1]-A[1], B[0]-A[0]); const h = 6;
+        const barb = (P, a2) => {
+          lp.drawLine({ start:{x:P[0],y:P[1]}, end:{x:P[0]+h*Math.cos(a2+0.42), y:P[1]+h*Math.sin(a2+0.42)}, thickness:0.8, color:dcol });
+          lp.drawLine({ start:{x:P[0],y:P[1]}, end:{x:P[0]+h*Math.cos(a2-0.42), y:P[1]+h*Math.sin(a2-0.42)}, thickness:0.8, color:dcol });
+        };
+        barb(A, ang); barb(B, ang+Math.PI);
+        const txt = fmtMm(Math.hypot(dm.bx-dm.ax, dm.by-dm.ay) * d.mmPerPt);
+        const sz = 8, tw = font.widthOfTextAtSize(txt, sz);
+        lp.drawText(txt, { x:(A[0]+B[0])/2 - tw/2, y:(A[1]+B[1])/2 + 2, size:sz, font, color:dcol });
+      }
+    }
+    drawn++;
+  }
+  if(!drawn) throw new Error('線・寸法線を引いたページがありません');
+  return await src.save();
+}
+function outNameOf(name){ return name.replace(/\.pdf$/i, '') + '_モジュール線.pdf'; }
+function outName(){ return outNameOf(S.fileName); }
+// 保存：線の入ったPDFを「元のPDFごとに別ファイル」で出力
+async function savePdf(){
+  try{
+    busy(true);
+    syncActive();
+    const targets = S.docs.filter(d => d.mmPerPt && anyGridIn(d));
+    if(!targets.length){ toast('線の入ったPDFがありません（基準合わせと線が必要）', 'am'); return; }
+    let ok = 0;
+    for(const d of targets){
+      const bytes = await buildAnnotatedPdf(d);
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = outNameOf(d.fileName);
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 60000);
+      ok++;
+    }
+    toast(ok > 1 ? ok + '個のPDFを保存しました（元PDFごと）' : '保存しました：' + outNameOf(targets[0].fileName), 'gn');
+  }catch(err){
+    console.error(err); toast('保存に失敗：' + (err && err.message || err), 'rd');
+  }finally{ busy(false); }
+}
+// 1シートを画像化（base PDF描画＋線/寸法/符号の重ね）→ {png, ptW, ptH}
+async function renderSheetImage(d, p, scale){
+  const page = await d.doc.getPage(p);
+  const vpN = page.getViewport({ scale });
+  const vp1 = page.getViewport({ scale: 1 });
+  const cv = document.createElement('canvas'); cv.width = Math.floor(vpN.width); cv.height = Math.floor(vpN.height);
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+  await page.render({ canvasContext: ctx, viewport: vpN }).promise;
+  drawSheetOverlays(ctx, d.grids[p] || [], d.dims[p] || [], d.mmPerPt, scale);
+  const b64 = cv.toDataURL('image/png').split(',')[1];
+  return { png: b64ToBytes(b64), ptW: vp1.width, ptH: vp1.height };
+}
+// 印刷：全図面（全PDF・全ページ）を画像化して1つのPDFにまとめて開く（符号・寸法も含む・一度に印刷）
+async function printPdf(){
+  try{
+    busy(true);
+    syncActive();
+    const sheets = flatSheets();
+    if(!sheets.length){ toast('印刷する図面がありません', 'am'); return; }
+    const out = await PDFLib.PDFDocument.create();
+    for(const s of sheets){
+      const im = await renderSheetImage(s.d, s.p, 2);
+      const img = await out.embedPng(im.png);
+      const pg = out.addPage([im.ptW, im.ptH]);
+      pg.drawImage(img, { x:0, y:0, width:im.ptW, height:im.ptH });
+    }
+    const bytes = await out.save();
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+    const w = window.open(url);
+    setTimeout(()=>URL.revokeObjectURL(url), 120000);
+    if(w) toast(sheets.length + '枚を1つにまとめて開きました。そのまま印刷（Ctrl+P）してください', 'bl');
+    else  toast('タブを開けませんでした（ポップアップ許可を確認してください）', 'am');
+  }catch(err){
+    console.error(err); toast('印刷準備に失敗：' + (err && err.message || err), 'rd');
+  }finally{ busy(false); }
+}
+
+// ---------- 画面更新 ----------
+function busy(b){
+  S.busy = b;
+  updateAll();
+}
+function updateToolbar(){
+  const has = !!S.pdfDoc;
+  $('btnPrev').disabled = !has || S.pageNum <= 1 || S.busy;
+  $('btnNext').disabled = !has || S.pageNum >= S.pageCount || S.busy;
+  $('pageInp').disabled = !has || S.busy;
+  $('btnZoomIn').disabled = !has || S.busy;
+  $('btnZoomOut').disabled = !has || S.busy;
+  $('btnFit').disabled = !has || S.busy;
+  $('zoomLbl').textContent = Math.round(S.zoom * 100) + '%';
+  $('pageInp').value = S.pageNum;
+}
+// サイドバーの図面・階の一覧を描き直す（各ページ＝階ラベル入力＋切替ボタン）
+// 全PDF・全ページを平らな図面リストに
+function flatSheets(){
+  const out = [];
+  S.docs.forEach((d, di) => { for(let p = 1; p <= d.pageCount; p++) out.push({ di, p, d }); });
+  return out;
+}
+// プルダウン表示名（階ラベル優先／複数PDFならファイル名も）
+function sheetDisp(s, multi){
+  const lbl = s.d.labels[s.p] || '';
+  const pg = s.d.pageCount > 1 ? ('p' + s.p) : '';
+  const nm = multi ? (s.d.fileName.replace(/\.pdf$/i, '').slice(0, 10)) : '';
+  return [nm, lbl || pg, (lbl && pg ? '(' + pg + ')' : '')].filter(Boolean).join(' ') || '図面';
+}
+// 今の図面の線(grids)を対象(di,p)へ加算コピー（校正が無ければ引き継ぐ）。戻り値=転写した本組数
+function copyGridsTo(di, p){
+  const srcGrids = gridsOf(S.pageNum);
+  if(!srcGrids.length) return 0;
+  const tgt = S.docs[di];
+  // 吸着補正offsは元図面のPDF線用なので引き継がない。変則スパンspansは意図した間取りなので引き継ぐ
+  const copies = srcGrids.map(f => Object.assign({}, f, { offs: undefined, spans: f.spans ? Object.assign({}, f.spans) : undefined }));
+  tgt.grids[p] = (tgt.grids[p] || []).concat(copies);
+  if(!tgt.mmPerPt && S.mmPerPt) tgt.mmPerPt = S.mmPerPt;
+  return copies.length;
+}
+// 位置合わせ転写：今の図面の線を控えて転写先へ切替→クリックで基準点に合わせて配置
+async function startPastePlacement(di, p){
+  syncActive();
+  const srcGrids = gridsOf(S.pageNum);
+  if(!srcGrids.length){ toast('転写する線がありません', 'am'); return; }
+  const ref = srcGrids[0];   // 最初の線の基点を「合わせる基準」にする
+  S.paste = { grids: srcGrids.map(f => Object.assign({}, f, { offs: undefined, spans: f.spans ? Object.assign({}, f.spans) : undefined })), srcRef: { x: ref.ax, y: ref.ay }, mmPerPt: S.mmPerPt };
+  await gotoSheet(di, p);
+  // 転写先に校正が無ければ、元の縮尺を引き継ぐ（プレビュー表示のためにも）
+  if(!S.mmPerPt && S.paste.mmPerPt){ S.mmPerPt = S.paste.mmPerPt; const t = S.docs[S.curDoc]; if(t) t.mmPerPt = S.paste.mmPerPt; }
+  setMode('paste');
+}
+// クリック点に合わせて配置を確定（srcRef→clickへ全体を平行移動）
+function finishPaste(pt){
+  if(!S.paste) return;
+  const dx = pt.x - S.paste.srcRef.x, dy = pt.y - S.paste.srcRef.y;
+  const moved = S.paste.grids.map(f => Object.assign({}, f, { ax:f.ax+dx, bx:f.bx+dx, ay:f.ay+dy, by:f.by+dy }));
+  S.grids[S.pageNum] = (S.grids[S.pageNum] || []).concat(moved);
+  const n = moved.length;
+  S.paste = null; S.previewB = null;
+  setMode(null);
+  updateAll();
+  toast(n + '本組を基準点に合わせて配置しました', 'gn');
+}
+
+// ---------- PDFの既存線への吸着（スナップ）----------
+function matTransform(m, n){
+  return [ m[0]*n[0]+m[2]*n[1], m[1]*n[0]+m[3]*n[1], m[0]*n[2]+m[2]*n[3], m[1]*n[2]+m[3]*n[3], m[0]*n[4]+m[2]*n[5]+m[4], m[1]*n[4]+m[3]*n[5]+m[5] ];
+}
+function matApply(m, x, y){ return [ x*m[0]+y*m[2]+m[4], x*m[1]+y*m[3]+m[5] ]; }
+function segInt(a, b){   // 2線分の交点（無ければnull）
+  const x1=a[0],y1=a[1],x2=a[2],y2=a[3],x3=b[0],y3=b[1],x4=b[2],y4=b[3];
+  const d=(x2-x1)*(y4-y3)-(y2-y1)*(x4-x3); if(Math.abs(d)<1e-6) return null;
+  const t=((x3-x1)*(y4-y3)-(y3-y1)*(x4-x3))/d, u=((x3-x1)*(y2-y1)-(y3-y1)*(x2-x1))/d;
+  if(t<-0.002||t>1.002||u<-0.002||u>1.002) return null;
+  return [x1+t*(x2-x1), y1+t*(y2-y1)];
+}
+function nearestOnSeg(px, py, s){   // 点から線分への最近点
+  const x1=s[0],y1=s[1],x2=s[2],y2=s[3]; const dx=x2-x1, dy=y2-y1; const L=dx*dx+dy*dy;
+  let t = L>0 ? ((px-x1)*dx+(py-y1)*dy)/L : 0; t=Math.max(0,Math.min(1,t));
+  return [x1+t*dx, y1+t*dy];
+}
+// PDFページのベクトル線を抽出→vp1座標のセグメント・特徴点(端点/交点)に
+async function extractSnapData(page, vp1){
+  const OPS = pdfjsLib.OPS; const ol = await page.getOperatorList();
+  let ctm=[1,0,0,1,0,0]; const stack=[]; const segs=[]; const ptsRaw=[]; const MAX=40000;
+  const toVp1=(x,y)=>{ const u=matApply(ctm,x,y); return vp1.convertToViewportPoint(u[0],u[1]); };
+  for(let i=0;i<ol.fnArray.length && segs.length<MAX;i++){
+    const fn=ol.fnArray[i], a=ol.argsArray[i];
+    if(fn===OPS.save) stack.push(ctm);
+    else if(fn===OPS.restore) ctm=stack.pop()||[1,0,0,1,0,0];
+    else if(fn===OPS.transform) ctm=matTransform(ctm,a);
+    else if(fn===OPS.constructPath){
+      const ops=a[0], co=a[1]; let ci=0,cx=0,cy=0,sx=0,sy=0;
+      for(const op of ops){
+        if(op===OPS.moveTo){ cx=co[ci++]; cy=co[ci++]; sx=cx; sy=cy; ptsRaw.push(toVp1(cx,cy)); }
+        else if(op===OPS.lineTo){ const nx=co[ci++],ny=co[ci++]; const A=toVp1(cx,cy),B=toVp1(nx,ny); segs.push([A[0],A[1],B[0],B[1]]); ptsRaw.push(B); cx=nx; cy=ny; }
+        else if(op===OPS.curveTo){ ci+=4; cx=co[ci++]; cy=co[ci++]; ptsRaw.push(toVp1(cx,cy)); }
+        else if(op===OPS.curveTo2||op===OPS.curveTo3){ ci+=2; cx=co[ci++]; cy=co[ci++]; ptsRaw.push(toVp1(cx,cy)); }
+        else if(op===OPS.closePath){ const A=toVp1(cx,cy),B=toVp1(sx,sy); segs.push([A[0],A[1],B[0],B[1]]); cx=sx; cy=sy; }
+        else if(op===OPS.rectangle){ const x=co[ci++],y=co[ci++],w=co[ci++],h=co[ci++];
+          const c1=toVp1(x,y),c2=toVp1(x+w,y),c3=toVp1(x+w,y+h),c4=toVp1(x,y+h);
+          segs.push([c1[0],c1[1],c2[0],c2[1]],[c2[0],c2[1],c3[0],c3[1]],[c3[0],c3[1],c4[0],c4[1]],[c4[0],c4[1],c1[0],c1[1]]);
+          ptsRaw.push(c1,c2,c3,c4);
+        }
+      }
+    }
+  }
+  const seen=new Set(); const pts=[];
+  for(const p of ptsRaw){ const k=Math.round(p[0]*2)+','+Math.round(p[1]*2); if(!seen.has(k)){ seen.add(k); pts.push(p); } }
+  // 交点：全線分どうしは重すぎるので、多いときは「長い線分」だけに絞って計算（通り芯の交点を拾う）
+  let iSegs = segs;
+  if(iSegs.length > 1000) iSegs = segs.filter(s => Math.hypot(s[2]-s[0], s[3]-s[1]) >= 30);
+  if(iSegs.length <= 2000){
+    let added=0;
+    for(let i=0;i<iSegs.length&&added<3000;i++){ for(let j=i+1;j<iSegs.length&&added<3000;j++){
+      const q=segInt(iSegs[i],iSegs[j]); if(q){ const k=Math.round(q[0]*2)+','+Math.round(q[1]*2); if(!seen.has(k)){ seen.add(k); pts.push(q); added++; } }
+    }}
+  }
+  return { segs, pts };
+}
+function currentSnapData(){ const d=S.docs[S.curDoc]; return (d && d.snapCache && d.snapCache[S.pageNum]) || null; }
+async function ensureSnapData(){
+  const d=S.docs[S.curDoc]; if(!d) return;
+  d.snapCache=d.snapCache||{}; d.snapBusy=d.snapBusy||{};
+  const p=S.pageNum;
+  if(d.snapBusy[p]) return d.snapBusy[p];       // 計算中 → awaitすれば完了を待てる
+  if(d.snapCache[p]) return;                    // 済み
+  d.snapCache[p]={segs:[],pts:[]};              // 計算が終わるまでの暫定（mousemove用）
+  d.snapBusy[p]=(async()=>{
+    try{ const page=await d.doc.getPage(p); const vp1=page.getViewport({scale:1}); d.snapCache[p]=await extractSnapData(page, vp1); }
+    catch(e){ console.error(e); }
+    finally{ delete d.snapBusy[p]; }
+    if(S.docs[S.curDoc]===d && S.pageNum===p) updateAll();
+  })();
+  return d.snapBusy[p];
+}
+// カーソル(vp1)を最寄りの端点/交点(優先)か線上へ吸着。閾値thr内で当たれば{hit:true}
+function snapPoint(p, thr){
+  const data=currentSnapData(); if(!data) return {x:p.x,y:p.y,hit:false};
+  let best=null, bd=thr*thr;
+  for(const q of data.pts){ const dx=q[0]-p.x,dy=q[1]-p.y,d=dx*dx+dy*dy; if(d<bd){ bd=d; best=q; } }
+  if(best) return {x:best[0],y:best[1],hit:true};
+  let bs=null, bsd=thr*thr;
+  for(const s of data.segs){ const q=nearestOnSeg(p.x,p.y,s); const dx=q[0]-p.x,dy=q[1]-p.y,d=dx*dx+dy*dy; if(d<bsd){ bsd=d; bs=q; } }
+  if(bs) return {x:bs[0],y:bs[1],hit:true};
+  return {x:p.x,y:p.y,hit:false};
+}
+// 複製した線1本を、近くのPDFの長い平行線へ吸着補正（「微調整」チェックON時のみ）
+// 戻り値=補正量pt（補正しなければ0）。壁の両面線（対の2本）ならその中点＝芯に合わせる
+function snapDupLine(f, k){
+  if(!S.dupAdjust || !S.mmPerPt) return 0;
+  const data = currentSnapData(); if(!data || !data.segs.length) return 0;
+  const step = f.spacing / S.mmPerPt;
+  const nominal = linePos(f, k, S.mmPerPt);   // 変則スパンも反映した現在位置（この時点でoffs[k]は未設定）
+  const tol = Math.min(step * 0.15, 25 / S.mmPerPt);   // 実寸25mmまで＝本当の微調整だけ（壁面線55mm等への誤吸着防止）
+  const spanMin = step * 1.2;             // 短い線分（文字・記号・破線の断片）は対象外
+  const cands = [];
+  for(const s of data.segs){
+    const isH = Math.abs(s[1]-s[3]) < 0.3, isV = Math.abs(s[0]-s[2]) < 0.3;
+    if(f.horizontal ? !isH : !isV) continue;
+    const len = f.horizontal ? Math.abs(s[2]-s[0]) : Math.abs(s[3]-s[1]);
+    if(len < spanMin) continue;
+    const c = f.horizontal ? (s[1]+s[3])/2 : (s[0]+s[2])/2;
+    if(Math.abs(c - nominal) <= tol) cands.push(c);
+  }
+  if(!cands.length) return 0;
+  cands.sort((a,b)=>Math.abs(a-nominal)-Math.abs(b-nominal));
+  let target = cands[0];
+  const other = cands.find(c => (c - nominal) * (target - nominal) < 0);   // 反対側の最寄り
+  if(other !== undefined && Math.abs(other - target) <= 7) target = (target + other) / 2;   // 壁の両面→中点
+  const off = target - nominal;
+  if(Math.abs(off) < 0.05) return 0;
+  (f.offs = f.offs || {})[k] = off;
+  return off;
+}
+// クリック/プレビュー用：スナップ有効なら吸着した点を返す
+function pickPoint(e){
+  const raw=vp1FromEvent(e);
+  if(S.snapOn && currentSnapData()){ const s=snapPoint(raw, 10/S.zoom); if(s.hit) return {x:s.x,y:s.y}; }
+  return raw;
+}
+// サイドバー「図面・階」＝表示中プルダウン・階名入力・転写先プルダウンを更新
+function renderSheetList(){
+  const sel = $('sheetSelect'); if(!sel) return;
+  const tgt = $('copyTarget'), lab = $('curLabelInp');
+  const sheets = flatSheets(); const multi = S.docs.length > 1;
+  sel.innerHTML = '';
+  sheets.forEach((s, idx) => {
+    const o = document.createElement('option');
+    o.value = idx; o.textContent = sheetDisp(s, multi);
+    if(s.di === S.curDoc && s.p === S.pageNum) o.selected = true;
+    sel.appendChild(o);
+  });
+  tgt.innerHTML = '';
+  const oAll = document.createElement('option'); oAll.value = 'all'; oAll.textContent = '他の全図面へ';
+  tgt.appendChild(oAll);
+  sheets.forEach((s, idx) => {
+    if(s.di === S.curDoc && s.p === S.pageNum) return;
+    const o = document.createElement('option'); o.value = idx; o.textContent = sheetDisp(s, multi);
+    tgt.appendChild(o);
+  });
+  lab.value = S.docs.length ? (S.labels[S.pageNum] || '') : '';
+}
+
+// サイドバーの格子リストを描き直す（各行に削除ボタン）
+function renderGridList(){
+  const box = $('gridList');
+  if(!box) return;
+  const grids = gridsOf(S.pageNum);
+  box.innerHTML = '';
+  grids.forEach((f, idx) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.cssText = 'justify-content:space-between; margin-top:4px;';
+    const label = document.createElement('span');
+    label.style.cssText = 'font-size:12px; color:var(--text2); flex:1;';
+    const total = 1 + (f.pos|0) + (f.neg|0);
+    const nOff = f.offs ? Object.keys(f.offs).length : 0;
+    const nSpan = f.spans ? Object.keys(f.spans).length : 0;
+    label.textContent = '線' + (idx+1) + '：' + (f.horizontal ? '横' : '縦') + '・間隔' + fmtMm(f.spacing) + (nSpan ? '（変則' + nSpan + '）' : '') + '・' + total + '本' + (nOff ? '・補正' + nOff : '');
+    let fix = null;
+    if(nOff){   // 吸着補正を取り消して均等間隔へ戻すボタン
+      fix = document.createElement('button');
+      fix.textContent = '補正解除';
+      fix.style.cssText = 'font-size:11.5px; padding:3px 8px;';
+      fix.title = '複製線の微調整をすべて取り消して、均等な間隔（' + fmtMm(f.spacing) + 'mm）に戻します';
+      fix.addEventListener('click', () => { delete f.offs; updateAll(); toast('補正を解除して均等間隔に戻しました', 'bl'); });
+    }
+    const dup = document.createElement('button');
+    dup.textContent = '複製';
+    dup.style.cssText = 'font-size:11.5px; padding:3px 8px;';
+    dup.addEventListener('click', () => { S.activeIdx = idx; setMode('dup'); drawOverlay(); });
+    const del = document.createElement('button');
+    del.textContent = '削除';
+    del.style.cssText = 'font-size:11.5px; padding:3px 8px;';
+    del.addEventListener('click', () => {
+      grids.splice(idx, 1);
+      if(!grids.length) delete S.grids[S.pageNum];
+      if(S.mode === 'dup') setMode(null);
+      updateAll();
+    });
+    row.appendChild(label); if(fix) row.appendChild(fix); row.appendChild(dup); row.appendChild(del);
+    box.appendChild(row);
+  });
+}
+
+function updateAll(){
+  const has = !!S.pdfDoc;
+  if(S.snapOn && has && !currentSnapData()) ensureSnapData();
+  updateToolbar();
+  $('btnCalib2p').disabled = !has || S.busy;
+  $('btnAutoScale').disabled = !has || S.busy;
+  $('btnCalibApply').disabled = !has || S.busy;
+  $('btnScaleApply').disabled = !has || S.busy;
+  $('btnAddGrid').disabled = !has || !S.mmPerPt || S.busy;
+  $('btnAddDim').disabled = !has || !S.mmPerPt || S.busy;
+  const pageGrids = gridsOf(S.pageNum);
+  const pageDims = dimsOf(S.pageNum);
+  $('btnUndoGrid').disabled = !pageGrids.length || S.busy;
+  $('btnClearGrid').disabled = !pageGrids.length || S.busy;
+  $('btnUndoDim').disabled = !pageDims.length || S.busy;
+  $('btnClearDim').disabled = !pageDims.length || S.busy;
+  const curReady = has && S.mmPerPt && (anyGrid() || anyDim());
+  const saveable = S.docs.some(d => ((d === S.docs[S.curDoc]) ? S.mmPerPt : d.mmPerPt) && (anyGridIn(d) || anyDimIn(d)));
+  $('btnSave').disabled = !saveable || S.busy;
+  $('btnPrint').disabled = !S.docs.length || S.busy;
+  $('btnCloseAll').disabled = !S.docs.length || S.busy;
+  $('btnSaveWork').disabled = !S.docs.length || S.busy;
+  const nSheets = flatSheets().length;
+  $('sheetSelect').disabled = !nSheets || S.busy;
+  $('curLabelInp').disabled = !nSheets || S.busy;
+  $('copyTarget').disabled = nSheets < 2 || S.busy;
+  $('btnCopyTo').disabled = nSheets < 2 || !gridsOf(S.pageNum).length || S.busy;
+  $('btnCopyPlace').disabled = nSheets < 2 || !gridsOf(S.pageNum).length || S.busy;
+  // 状態表示
+  const cs = $('calibStatus');
+  if(S.mmPerPt){ cs.textContent = '設定済み：' + scaleText(); cs.className = 'status ok'; }
+  else{ cs.textContent = '未設定'; cs.className = 'status ng'; }
+  const os = $('originStatus');
+  if(pageGrids.length){
+    os.textContent = 'このページに線 ' + pageGrids.length + ' 本組';
+    os.className = 'status ok';
+  }else{
+    os.textContent = S.mmPerPt ? '未設定（このページ）' : '未設定（先に基準合わせをしてください）';
+    os.className = 'status ng';
+  }
+  renderGridList();
+  renderSheetList();
+  const sd = currentSnapData();
+  const ss = $('snapStatus');
+  if(ss) ss.textContent = !S.snapOn ? '吸着オフ' : (!has ? 'PDF未読み込み' : (sd ? ('吸着点 ' + sd.pts.length + '（線 ' + sd.segs.length + '本）' + (sd.pts.length ? '' : '／ベクトル線なし（画像PDF？）')) : '線を読み取り中…'));
+  $('statusL').textContent = has
+    ? (S.labels[S.pageNum] ? S.labels[S.pageNum] + '　' : '') + S.fileName + '　' + S.pageNum + '/' + S.pageCount + 'ページ' + (S.busy ? '　処理中…' : '')
+    : 'ファイル未読み込み';
+  drawOverlay();
+}
+
+// ---------- ページ移動・ズーム ----------
+async function gotoPage(n){
+  if(!S.pdfDoc) return;
+  n = Math.max(1, Math.min(S.pageCount, Math.floor(n) || 1));
+  if(n === S.pageNum) { $('pageInp').value = n; return; }
+  S.pageNum = n;
+  // 計測途中の2点・校正パネルはページをまたがない（前ページの点で確定してしまう事故防止）
+  if(S.calib.p1 || S.calib.p2 || !$('calibPanel').hidden){
+    S.calib = { p1:null, p2:null };
+    $('calibPanel').hidden = true;
+    if(S.mode === 'c1' || S.mode === 'c2') setMode(null);
+  }
+  await renderPage();
+  updateAll();
+}
+async function setZoom(nz, cx, cy){
+  if(!S.pdfDoc || !S.vp1) return;
+  const old = S.zoom;
+  nz = Math.max(0.15, Math.min(6, nz));
+  if(Math.abs(nz - old) < 0.001) return;
+  if(cx == null){ cx = stage.clientWidth/2; cy = stage.clientHeight/2; }
+  const sx = stage.scrollLeft, sy = stage.scrollTop;
+  S.zoom = nz;
+  await renderPage();
+  // 拡大中心がなるべくズレないようスクロール位置を補正
+  const f = S.zoom / old;
+  stage.scrollLeft = (sx + cx) * f - cx;
+  stage.scrollTop  = (sy + cy) * f - cy;
+  updateToolbar();
+}
+$('btnPrev').addEventListener('click', ()=>gotoPage(S.pageNum - 1));
+$('btnNext').addEventListener('click', ()=>gotoPage(S.pageNum + 1));
+$('pageInp').addEventListener('change', e=>gotoPage(+e.target.value));
+$('btnZoomIn').addEventListener('click', ()=>setZoom(S.zoom * 1.25));
+$('btnZoomOut').addEventListener('click', ()=>setZoom(S.zoom / 1.25));
+$('btnFit').addEventListener('click', ()=>{
+  if(S.vp1) setZoom((stage.clientWidth - 40) / S.vp1.width);
+});
+stage.addEventListener('wheel', e=>{
+  if(e.shiftKey){                       // Shift+ホイール → 上下移動（従来スクロールの代わり）
+    e.preventDefault();
+    stage.scrollTop += e.deltaY;
+    return;
+  }
+  e.preventDefault();                    // 素のホイール → 拡大縮小（Ctrl不要）
+  const r = stage.getBoundingClientRect();
+  setZoom(S.zoom * (e.deltaY < 0 ? 1.2 : 1/1.2), e.clientX - r.left, e.clientY - r.top);
+}, { passive: false });
+
+// Space押下 or 中ボタンでドラッグ移動（パン）
+let spaceDown = false, panning = null;
+document.addEventListener('keydown', e=>{
+  if(e.code === 'Space' && !e.target.closest('input,select,textarea') && S.pdfDoc){
+    spaceDown = true; stage.style.cursor = 'grab'; e.preventDefault();
+  }
+});
+document.addEventListener('keyup', e=>{
+  if(e.code === 'Space'){ spaceDown = false; stage.style.cursor = ''; }
+});
+stage.addEventListener('mousedown', e=>{
+  if(e.button === 1 || (e.button === 0 && spaceDown)){
+    panning = { x:e.clientX, y:e.clientY, sx:stage.scrollLeft, sy:stage.scrollTop };
+    stage.style.cursor = 'grabbing';
+    e.preventDefault();
+  }
+});
+document.addEventListener('mousemove', e=>{
+  if(panning){
+    stage.scrollLeft = panning.sx - (e.clientX - panning.x);
+    stage.scrollTop  = panning.sy - (e.clientY - panning.y);
+  }
+});
+document.addEventListener('mouseup', ()=>{
+  if(panning){ panning = null; stage.style.cursor = spaceDown ? 'grab' : ''; }
+});
+
+// ---------- 線の作成/複製プレビュー（基準線を引く間・複製する側をマウスで示す） ----------
+cvOv.addEventListener('mousemove', e=>{
+  const pick = { c1:1, c2:1, g1:1, g2:1, dim1:1, dim2:1, paste:1 };
+  if(pick[S.mode]){
+    const raw = vp1FromEvent(e);
+    let p = raw, hit = null;
+    if(S.snapOn && currentSnapData()){ const s = snapPoint(raw, 10/S.zoom); if(s.hit){ p = { x:s.x, y:s.y }; hit = p; } }
+    S.snapHit = hit;
+    if(S.mode === 'g2' || S.mode === 'dim2' || S.mode === 'paste') S.previewB = p;
+    drawOverlay();
+  }else if(S.mode === 'dup'){
+    const f = gridsOf(S.pageNum)[S.activeIdx];
+    const side = f ? familySide(f, vp1FromEvent(e)) : 0;
+    if(side !== S.hoverSide){ S.hoverSide = side; cvOv.style.cursor = side ? 'crosshair' : ''; drawOverlay(); }
+  }else if(S.snapHit){ S.snapHit = null; drawOverlay(); }
+});
+cvOv.addEventListener('contextmenu', e=>{
+  if(S.mode === 'g1' || S.mode === 'g2' || S.mode === 'dim1' || S.mode === 'dim2' || S.mode === 'paste'){
+    e.preventDefault();
+    S.pending = null; S.previewB = null; S.paste = null;
+    setMode(null); drawOverlay();
+  }else if(S.mode === 'dup'){
+    // 右クリック＝マウス側の複製を1本戻す
+    e.preventDefault();
+    const f = gridsOf(S.pageNum)[S.activeIdx];
+    if(f){
+      const side = familySide(f, vp1FromEvent(e));
+      if(side > 0 && f.pos > 0){ if(f.offs) delete f.offs[f.pos]; if(f.spans) delete f.spans[f.pos]; f.pos--; }
+      else if(side < 0 && f.neg > 0){ if(f.offs) delete f.offs[-f.neg]; if(f.spans) delete f.spans[-f.neg]; f.neg--; }
+      updateAll();
+    }
+  }
+});
+
+// ---------- キーボード（Escでモード中止） ----------
+document.addEventListener('keydown', e=>{
+  if(e.key === 'Escape' && S.mode){
+    S.calib = {p1:null,p2:null}; S.pending = null; S.previewB = null; S.paste = null;
+    setMode(null); $('calibPanel').hidden = true; drawOverlay();
+  }else if(e.key === 'Escape' && (!$('calibPanel').hidden || S.calib.p1 || S.calib.p2)){
+    // 2点計測後の入力待ち（mode=null）でもEscで取り消せるように
+    S.calib = {p1:null,p2:null};
+    $('calibPanel').hidden = true;
+    guide.hidden = true;
+    drawOverlay();
+  }
+});
+
+// ---------- マウス座標表示（縮尺・作成中は範囲の寸法） ----------
+cvOv.addEventListener('mousemove', e=>{
+  if(!S.vp1) return;
+  let t = S.mmPerPt ? scaleText() : '';
+  if(S.mmPerPt && S.mode === 'g2' && S.pending){
+    const f = makeFamily(S.pending, vp1FromEvent(e));
+    if(f){ const len = (f.horizontal ? Math.abs(f.bx-f.ax) : Math.abs(f.by-f.ay)) * S.mmPerPt;
+      t = (f.horizontal ? '横線' : '縦線') + ' 長さ ' + fmtMm(len) + ' mm　｜　' + t; }
+  }else if(S.mmPerPt && S.mode === 'dup'){
+    const f = gridsOf(S.pageNum)[S.activeIdx];
+    if(f) t = '次の間隔 ' + fmtMm(S.spacing) + ' mm　｜　' + (1+(f.pos|0)+(f.neg|0)) + '本　｜　' + t;
+  }else if(S.mmPerPt && S.mode === 'dim2' && S.pending){
+    const p = vp1FromEvent(e);
+    const mm = Math.hypot(p.x - S.pending.x, p.y - S.pending.y) * S.mmPerPt;
+    t = '寸法 ' + fmtMm(mm) + ' mm　｜　' + t;
+  }
+  $('statusR').textContent = t;
+});
+cvOv.addEventListener('mouseleave', ()=>{ $('statusR').textContent = S.mmPerPt ? scaleText() : ''; });
+
+// ---------- サイドバーのイベント ----------
+$('btnOpen').addEventListener('click', ()=>$('fileInp').click());
+$('fileInp').addEventListener('change', e=>{ loadFiles(e.target.files); e.target.value=''; });
+$('btnCloseAll').addEventListener('click', ()=>{
+  if(!S.docs.length) return;
+  closeAllDocs();
+  toast('すべてのPDFを閉じました', 'bl');
+});
+$('btnSaveWork').addEventListener('click', saveWork);
+$('btnOpenWork').addEventListener('click', ()=>$('workInp').click());
+$('workInp').addEventListener('change', e=>{ if(e.target.files[0]) loadWork(e.target.files[0]); e.target.value=''; });
+$('sheetSelect').addEventListener('change', e=>{
+  const s = flatSheets()[+e.target.value];
+  if(s) gotoSheet(s.di, s.p);
+});
+$('curLabelInp').addEventListener('input', e=>{ if(S.docs.length) S.labels[S.pageNum] = e.target.value; });
+$('curLabelInp').addEventListener('change', ()=> updateAll());
+$('btnCopyTo').addEventListener('click', ()=>{
+  syncActive();
+  if(!gridsOf(S.pageNum).length){ toast('転写する線がありません（今の図面に線がありません）', 'am'); return; }
+  const v = $('copyTarget').value;
+  const sheets = flatSheets();
+  const targets = (v === 'all')
+    ? sheets.filter(s => !(s.di === S.curDoc && s.p === S.pageNum))
+    : (sheets[+v] ? [sheets[+v]] : []);
+  if(!targets.length){ toast('転写先がありません', 'am'); return; }
+  for(const s of targets) copyGridsTo(s.di, s.p);
+  updateAll();
+  toast(targets.length + '図面へ線を転写しました', 'gn');
+});
+$('btnCopyPlace').addEventListener('click', ()=>{
+  if(!gridsOf(S.pageNum).length){ toast('転写する線がありません（今の図面に線がありません）', 'am'); return; }
+  const v = $('copyTarget').value;
+  if(v === 'all'){ toast('位置指定は、転写先を1つ選んでください', 'am'); return; }
+  const s = flatSheets()[+v];
+  if(!s){ toast('転写先を選んでください', 'am'); return; }
+  startPastePlacement(s.di, s.p);
+});
+
+// ドラッグ&ドロップ（複数PDF・作業ファイル(.json)対応）
+window.addEventListener('dragover', e=>{ e.preventDefault(); });
+window.addEventListener('drop', e=>{
+  e.preventDefault();
+  const files = e.dataTransfer.files;
+  if(!files || !files.length) return;
+  const work = [...files].find(f => /\.json$/i.test(f.name));
+  if(work) loadWork(work); else loadFiles(files);
+});
+
+$('btnCalib2p').addEventListener('click', ()=>{
+  if(S.mode === 'c1' || S.mode === 'c2'){ S.calib={p1:null,p2:null}; setMode(null); drawOverlay(); return; }
+  S.calib = { p1:null, p2:null };
+  $('calibPanel').hidden = true;
+  setMode('c1');
+  drawOverlay();
+});
+$('btnCalibApply').addEventListener('click', ()=>applyCalib(parseFloat($('distInp').value)));
+$('distInp').addEventListener('keydown', e=>{ if(e.key==='Enter') applyCalib(parseFloat($('distInp').value)); });
+// マス数 → 実寸mmを自動計算（マス数 × 現在の間隔設定）。※マス数＝区間の数（線4本なら3マス）
+const cellsToDist = ()=>{ const n = parseFloat($('cellsInp').value); if(n > 0) $('distInp').value = Math.round(n * S.spacing * 10) / 10; };
+// 間隔設定が変わったら「× ○○mm」表示と計算済みの実寸も追従させる
+const syncCellsUI = ()=>{
+  $('cellsModLbl').textContent = fmtMm(S.spacing);
+  if(!$('calibPanel').hidden && parseFloat($('cellsInp').value) > 0) cellsToDist();
+};
+$('cellsInp').addEventListener('input', cellsToDist);
+$('cellsInp').addEventListener('keydown', e=>{ if(e.key==='Enter'){ cellsToDist(); applyCalib(parseFloat($('distInp').value)); } });
+$('btnAutoScale').addEventListener('click', autoScale);
+$('axisSnapChk').addEventListener('change', e=>{ S.axisSnap = e.target.checked; saveSettings(); });
+$('snapChk').addEventListener('change', e=>{
+  S.snapOn = e.target.checked;
+  if(S.snapOn) ensureSnapData(); else S.snapHit = null;
+  updateAll(); drawOverlay();
+});
+$('dupAdjustChk').addEventListener('change', e=>{
+  S.dupAdjust = e.target.checked;
+  if(S.dupAdjust) ensureSnapData();
+  saveSettings();
+});
+$('axisChk').addEventListener('change', e=>{ S.axisLabelOn = e.target.checked; saveSettings(); drawOverlay(); });
+$('btnScaleApply').addEventListener('click', ()=>applyScaleDirect(parseFloat($('scaleInp').value)));
+
+$('btnAddGrid').addEventListener('click', ()=>{
+  if(S.mode === 'g1' || S.mode === 'g2' || S.mode === 'dup'){ S.pending = null; S.previewB = null; setMode(null); drawOverlay(); return; }
+  setMode('g1');
+});
+$('btnUndoGrid').addEventListener('click', ()=>{
+  const grids = gridsOf(S.pageNum);
+  if(!grids.length){ toast('取り消す線がありません', 'am'); return; }
+  grids.pop();
+  if(!grids.length) delete S.grids[S.pageNum];
+  if(S.mode === 'dup') setMode(null);
+  updateAll();
+  toast('直前の線を取り消しました', 'bl');
+});
+$('btnClearGrid').addEventListener('click', ()=>{
+  if(!gridsOf(S.pageNum).length){ toast('このページに線はありません', 'am'); return; }
+  delete S.grids[S.pageNum];
+  setMode(null);
+  updateAll();
+  toast('このページの線を全て消しました', 'bl');
+});
+$('btnAddDim').addEventListener('click', ()=>{
+  if(S.mode === 'dim1' || S.mode === 'dim2'){ S.pending = null; S.previewB = null; setMode(null); drawOverlay(); return; }
+  if(!S.mmPerPt){ toast('先に「基準合わせ」で縮尺を設定してください', 'am'); return; }
+  setMode('dim1');
+});
+$('btnUndoDim').addEventListener('click', ()=>{
+  const dims = dimsOf(S.pageNum);
+  if(!dims.length){ toast('取り消す寸法線がありません', 'am'); return; }
+  dims.pop();
+  if(!dims.length) delete S.dims[S.pageNum];
+  updateAll();
+  toast('直前の寸法線を取り消しました', 'bl');
+});
+$('btnClearDim').addEventListener('click', ()=>{
+  if(!dimsOf(S.pageNum).length){ toast('このページに寸法線はありません', 'am'); return; }
+  delete S.dims[S.pageNum];
+  updateAll();
+  toast('このページの寸法線を全て消しました', 'bl');
+});
+
+document.querySelectorAll('.preset').forEach(b=>{
+  b.addEventListener('click', ()=>{
+    $('spacingInp').value = b.dataset.mm;
+    S.spacing = +b.dataset.mm;
+    saveSettings(); syncSpacingSel(); syncCellsUI(); updateAll();
+  });
+});
+$('spacingInp').addEventListener('change', e=>{
+  const v = parseFloat(e.target.value);
+  if(v >= 50 && v <= 5000){ S.spacing = v; saveSettings(); syncSpacingSel(); syncCellsUI(); updateAll(); }
+  else{ e.target.value = S.spacing; toast('間隔は50〜5000mmで指定してください', 'am'); }
+});
+$('halfChk').addEventListener('change', e=>{ S.showHalf = e.target.checked; saveSettings(); drawOverlay(); });
+
+function selectSwatch(c){
+  S.color = c;
+  document.querySelectorAll('.swatch').forEach(s=>s.classList.toggle('sel', s.dataset.c === c));
+  saveSettings(); drawOverlay();
+}
+document.querySelectorAll('.swatch').forEach(s=>{
+  s.addEventListener('click', ()=>{ selectSwatch(s.dataset.c); $('colorInp').value = s.dataset.c; });
+});
+$('colorInp').addEventListener('input', e=>selectSwatch(e.target.value));
+
+$('widthSel').addEventListener('change', e=>{ S.widthPt = parseFloat(e.target.value); saveSettings(); drawOverlay(); });
+$('opacityRng').addEventListener('input', e=>{
+  S.opacity = e.target.value / 100;
+  $('opacityLbl').textContent = e.target.value + '%';
+  saveSettings(); drawOverlay();
+});
+
+$('btnSave').addEventListener('click', savePdf);
+$('btnPrint').addEventListener('click', printPdf);
+
+// ---------- 初期化 ----------
+(function init(){
+  if(!window.pdfjsLib || !window.PDFLib){
+    toast('部品(lib)の読み込みに失敗しました。libフォルダごと配布されているか確認してください', 'rd');
+    return;
+  }
+  loadSettings();
+  syncSettingsToUI();
+  updateAll();
+})();
+
+// ---------- 検証用フック（動作確認テストから呼ぶ。通常利用では未使用） ----------
+window.__mg = {
+  S, loadBytes, addDoc, activateDoc, gotoSheet, flatSheets, copyGridsTo, startPastePlacement, finishPaste, drawOverlay, gridsOf, dimsOf, anyGrid, anyGridIn, anyDimIn, makeFamily, buildAnnotatedPdf, dumpWork, restoreWork, ensureSnapData, currentSnapData, snapPoint, extractSnapData, computeAxisLabels, floorFromName, renderSheetImage,
+  lineOff, linePos, snapDupLine, detectScaleFromTexts, detectScaleFromLines, applyScaleDirect,
+  test_setCalib(p1, p2, mm){ S.calib = { p1, p2 }; applyCalib(mm); },
+  // 2点で基準線を1本引く（描画・保存の検証用）。戻り値=そのfamily
+  test_addLine(a, b, spacing){
+    if(spacing) S.spacing = spacing;
+    const f = makeFamily(a, b);
+    if(!f) return null;
+    const arr = (S.grids[S.pageNum] = S.grids[S.pageNum] || []);
+    arr.push(f); S.activeIdx = arr.length - 1;
+    updateAll();
+    return f;
+  },
+  // 直近の線を +側/−側 へ複製本数を足す
+  test_dup(pos, neg){
+    const f = gridsOf(S.pageNum)[S.activeIdx];
+    if(!f) return null;
+    f.pos += (pos|0); f.neg += (neg|0); updateAll();
+    return { pos:f.pos, neg:f.neg, total:1+f.pos+f.neg };
+  },
+  test_addDim(a, b){ const ok = addDim(a, b); updateAll(); return ok ? dimsOf(S.pageNum).length : 0; },
+  test_clearGrids(){ S.grids = {}; S.activeIdx = -1; updateAll(); },
+  test_exportBytes(){ return buildAnnotatedPdf(); },
+};
+</script>
+</body>
+</html>
