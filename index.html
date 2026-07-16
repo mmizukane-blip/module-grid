@@ -388,6 +388,8 @@ const S = {
   snapHit: null,      // 吸着中の点（vp1・インジケータ表示用）
   axisLabelOn: true,  // 通り芯符号（横=数字／縦=いろは）の表示
   renderDpr: null,    // ベース画像を描いたときの devicePixelRatio（オーバーレイと揃えるため）
+  renderZoom: null,   // ベース画像を描いたときのズーム。今のS.zoomと違う間＝引き伸ばし表示（荒いが即時）
+  interacting: false, // ホイールで拡大縮小の操作中（本描画を待たせている）
   docs: [],           // 読み込んだPDF群 [{doc,srcBytes,fileName,pageCount,pageNum,grids,dims,labels,mmPerPt}]
   curDoc: -1,         // アクティブなPDFの添字（S.pdfDoc等はこのPDFの鏡）
   spacing: 910,
@@ -707,6 +709,14 @@ function floorFromName(name){
 }
 
 // ---------- 描画 ----------
+// キャンバスの「表示サイズ」だけを今のズームに合わせる（中の画像は触らない）。
+// 画像が古いズームのままなら、ブラウザが引き伸ばして表示する＝荒いが一瞬で出る
+function applyCanvasCss(){
+  if(!S.vp1) return;
+  const w = S.vp1.width * S.zoom + 'px', h = S.vp1.height * S.zoom + 'px';
+  cvBase.style.width = w; cvBase.style.height = h;
+  cvOv.style.width   = w; cvOv.style.height   = h;
+}
 let renderSeq = 0;
 async function renderPage(){
   if(!S.pdfDoc) return;
@@ -715,19 +725,19 @@ async function renderPage(){
   if(seq !== renderSeq) return;
   S.vp1 = page.getViewport({ scale: 1 });
   const dpr = window.devicePixelRatio || 1;
-  S.renderDpr = dpr;   // オーバーレイ描画と同じ倍率を使うために控える
   // 巨大キャンバス防止（辺8192px上限）
   const maxZ = Math.min(6, 8192/(S.vp1.width*dpr), 8192/(S.vp1.height*dpr));
   if(S.zoom > maxZ) S.zoom = maxZ;
   if(S.zoom < 0.15) S.zoom = 0.15;
-  const vp = page.getViewport({ scale: S.zoom * dpr });
-  cvBase.width = Math.floor(vp.width);  cvBase.height = Math.floor(vp.height);
-  cvOv.width   = cvBase.width;          cvOv.height   = cvBase.height;
-  const cssW = vp.width/dpr + 'px', cssH = vp.height/dpr + 'px';
-  cvBase.style.width = cssW; cvBase.style.height = cssH;
-  cvOv.style.width   = cssW; cvOv.style.height   = cssH;
+  const zoomUsed = S.zoom;   // この画像を描くときのズーム（描画中にホイールで変わっても混ざらないよう控える）
+  const vp = page.getViewport({ scale: zoomUsed * dpr });
+  const w = Math.floor(vp.width), h = Math.floor(vp.height);
   if(S.renderTask){ try{ S.renderTask.cancel(); }catch(e){} }
-  const task = page.render({ canvasContext: cvBase.getContext('2d'), viewport: vp });
+  // 描き上がるまで今の画像を消さない（白いチラつき防止）。巨大なときはメモリ優先で直接描く
+  const off = (w * h <= 20e6) ? document.createElement('canvas') : null;
+  if(off){ off.width = w; off.height = h; }
+  else { cvBase.width = w; cvBase.height = h; }
+  const task = page.render({ canvasContext: (off || cvBase).getContext('2d'), viewport: vp });
   S.renderTask = task;
   try{ await task.promise; }
   catch(err){
@@ -736,6 +746,10 @@ async function renderPage(){
   }
   if(seq !== renderSeq) return;
   S.renderTask = null;
+  if(off){ cvBase.width = w; cvBase.height = h; cvBase.getContext('2d').drawImage(off, 0, 0); }
+  cvOv.width = w; cvOv.height = h;
+  S.renderDpr = dpr; S.renderZoom = zoomUsed;   // この画像を描いたときの倍率＝オーバーレイもこれに合わせる
+  applyCanvasCss();                            // 表示サイズは今のズーム（描画中に変わっていれば引き伸ばし表示になる）
   drawOverlay();
   updateToolbar();
 }
@@ -860,17 +874,24 @@ function drawSheetOverlays(ctx, grids, dims, mmPerPt, z){
 }
 
 // オーバーレイ（格子・マーカー）を描き直す
+// マウス移動中の描き直しは1フレームに1回だけ（間引いて軽くする）
+let ovRaf = null;
+function drawOverlaySoon(){
+  if(ovRaf) return;
+  ovRaf = requestAnimationFrame(()=>{ ovRaf = null; drawOverlay(); });
+}
 let dprTimer = null;
 function drawOverlay(){
   const ctx = cvOv.getContext('2d');
   ctx.clearRect(0, 0, cvOv.width, cvOv.height);
   if(!S.vp1) return;
-  // ベース画像と同じ倍率で描く。画面の拡大率が変わっていたらベースを描き直す（ズレ防止）
+  // ベース画像と同じ倍率で描く（拡大操作中は画像ごとCSSで引き伸ばされるので線もぴったり合う）。
+  // 画面の拡大率(dpr)が変わっていたらベースを描き直す（ズレ防止）
   const curDpr = window.devicePixelRatio || 1;
   if(S.renderDpr && Math.abs(curDpr - S.renderDpr) > 0.001){
     clearTimeout(dprTimer); dprTimer = setTimeout(()=>renderPage(), 150);
   }
-  const z = S.zoom * (S.renderDpr || curDpr);
+  const z = (S.renderZoom || S.zoom) * (S.renderDpr || curDpr);
 
   // --- モジュール線（各family：基準線＋平行複製） ---
   if(S.mmPerPt){
@@ -1609,7 +1630,15 @@ async function gotoPage(n){
   await renderPage();
   updateAll();
 }
-async function setZoom(nz, cx, cy){
+// 操作が止まったら本描画（くっきり）に戻す
+let sharpTimer = null;
+function scheduleSharpRender(){
+  S.interacting = true;
+  clearTimeout(sharpTimer);
+  sharpTimer = setTimeout(()=>{ S.interacting = false; renderPage(); }, 150);
+}
+// ズーム変更：PDFは描き直さず、今の画像を引き伸ばして即表示（荒い）→止まったら本描画
+function setZoom(nz, cx, cy){
   if(!S.pdfDoc || !S.vp1) return;
   const old = S.zoom;
   nz = Math.max(0.15, Math.min(6, nz));
@@ -1617,12 +1646,13 @@ async function setZoom(nz, cx, cy){
   if(cx == null){ cx = stage.clientWidth/2; cy = stage.clientHeight/2; }
   const sx = stage.scrollLeft, sy = stage.scrollTop;
   S.zoom = nz;
-  await renderPage();
+  applyCanvasCss();
   // 拡大中心がなるべくズレないようスクロール位置を補正
   const f = S.zoom / old;
   stage.scrollLeft = (sx + cx) * f - cx;
   stage.scrollTop  = (sy + cy) * f - cy;
   updateToolbar();
+  scheduleSharpRender();
 }
 $('btnPrev').addEventListener('click', ()=>gotoPage(S.pageNum - 1));
 $('btnNext').addEventListener('click', ()=>gotoPage(S.pageNum + 1));
@@ -1679,12 +1709,12 @@ cvOv.addEventListener('mousemove', e=>{
     if(S.snapOn && currentSnapData()){ const s = snapPoint(raw, 10/S.zoom); if(s.hit){ p = { x:s.x, y:s.y }; hit = p; } }
     S.snapHit = hit;
     if(S.mode === 'g2' || S.mode === 'dim2' || S.mode === 'paste') S.previewB = p;
-    drawOverlay();
+    drawOverlaySoon();
   }else if(S.mode === 'dup'){
     const f = gridsOf(S.pageNum)[S.activeIdx];
     const side = f ? familySide(f, vp1FromEvent(e)) : 0;
-    if(side !== S.hoverSide){ S.hoverSide = side; cvOv.style.cursor = side ? 'crosshair' : ''; drawOverlay(); }
-  }else if(S.snapHit){ S.snapHit = null; drawOverlay(); }
+    if(side !== S.hoverSide){ S.hoverSide = side; cvOv.style.cursor = side ? 'crosshair' : ''; drawOverlaySoon(); }
+  }else if(S.snapHit){ S.snapHit = null; drawOverlaySoon(); }
 });
 cvOv.addEventListener('contextmenu', e=>{
   if(S.mode === 'g1' || S.mode === 'g2' || S.mode === 'dim1' || S.mode === 'dim2' || S.mode === 'paste'){
