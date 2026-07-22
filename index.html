@@ -214,7 +214,7 @@ details .hint{margin:6px 0;}
     </div>
 
     <div class="card">
-      <label class="chk"><input type="checkbox" id="snapChk" checked>🧲 PDFの既存の線に吸着（スナップ）</label>
+      <label class="chk"><input type="checkbox" id="snapChk" checked>🧲 PDFの線・文字に吸着（スナップ）</label>
       <div id="snapStatus" class="hint" style="margin-top:2px;">CADから出力したベクトルPDFで、端点・交点・線上にカーソルが吸い付きます（スキャン画像PDFには線データが無く効きません）。</div>
     </div>
 
@@ -278,6 +278,7 @@ details .hint{margin:6px 0;}
       <h2><span class="num">4</span>出力</h2>
       <div class="row">
         <button id="btnSave" class="primary" disabled>線入りPDFで保存</button>
+      <button id="btnToDwp" disabled>📄 DWPへ戻す</button>
         <button id="btnPrint" disabled>印刷</button>
       </div>
       <div class="hint">印刷は線入りPDFを新しいタブで開きます。そのまま Ctrl+P で印刷してください。</div>
@@ -344,6 +345,7 @@ details .hint{margin:6px 0;}
 <div id="toast"></div>
 
 <script src="lib/pdf.min.js"></script>
+<script src="lib/pdf-cjk.js"></script>
 <script src="lib/pdf.worker.min.js"></script>
 <script src="lib/pdf-lib.min.js"></script>
 <script>
@@ -361,6 +363,25 @@ details .hint{margin:6px 0;}
 // file:// で開いたときは Worker が使えないため、pdf.worker.min.js を
 // 通常のscriptとして読み込み済み（PDF.jsが自動でメインスレッド処理に切替える）
 if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
+
+// 日本語PDFの文字描画に必要な CMap・標準フォントを同梱データ(lib/pdf-cjk.js)から渡す。
+// これが無いと日本語CIDフォント（MS-Gothic等）の文字が1文字も描かれない（DWPで解決済みの方式を流用）。
+function b64ToU8cjk(b64){ const bin=atob(b64), u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i); return u; }
+class MgCMapReader {
+  async fetch(a){
+    const d = window.DWP_CMAPS && DWP_CMAPS[a.name];
+    if(!d) throw new Error('CMapがありません: '+a.name);
+    return { cMapData: b64ToU8cjk(d), compressionType: 1 };   // 1 = バイナリ形式(.bcmap)
+  }
+}
+class MgFontReader {
+  async fetch(a){
+    const d = window.DWP_STDFONTS && DWP_STDFONTS[a.filename];
+    if(!d) throw new Error('フォントがありません: '+a.filename);
+    return b64ToU8cjk(d);
+  }
+}
+const PDFJS_OPTS = { useWorkerFetch:false, CMapReaderFactory:MgCMapReader, StandardFontDataFactory:MgFontReader };
 
 // ---------- 状態 ----------
 const S = {
@@ -523,7 +544,7 @@ async function loadFiles(files){
 // バイト列からPDFを1つ追加してアクティブにする（検証用にも使う共通処理）
 async function addDoc(bytes, name){
   const src = bytes.slice();                          // pdf-lib用に元データを別に保持
-  const doc = await pdfjsLib.getDocument({ data: bytes }).promise;  // bytesはdetachされる
+  const doc = await pdfjsLib.getDocument(Object.assign({ data: bytes }, PDFJS_OPTS)).promise;  // bytesはdetachされる
   const base = floorFromName(name); const bm = base && base.match(/^(\d+)F$/);
   const labels = {};
   for(let i = 1; i <= doc.numPages; i++){
@@ -662,7 +683,7 @@ async function restoreWork(data){
   syncSettingsToUI();
   for(const dd of data.docs){
     const bytes = b64ToBytes(dd.pdf);
-    const doc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+    const doc = await pdfjsLib.getDocument(Object.assign({ data: bytes.slice() }, PDFJS_OPTS)).promise;
     S.docs.push({
       doc, srcBytes: bytes, fileName: dd.fileName || 'restored.pdf',
       pageCount: dd.pageCount || doc.numPages, pageNum: dd.pageNum || 1,
@@ -991,8 +1012,8 @@ cvOv.addEventListener('click', e => {
     S.previewB = { x:p.x, y:p.y };
     setMode('g2');
   }else if(S.mode === 'g2'){
-    // 2点目 → 基準線を1本引いて、そのまま複製モードへ
-    const f = S.pending && makeFamily(S.pending, p);
+    // 2点目 → 基準線を1本引いて、そのまま複製モードへ（±10°以内は水平/垂直に補正）
+    const f = S.pending && makeFamily(S.pending, axisLock(S.pending, p));
     if(f){
       const arr = (S.grids[S.pageNum] = S.grids[S.pageNum] || []);
       arr.push(f);
@@ -1027,8 +1048,8 @@ cvOv.addEventListener('click', e => {
     S.previewB = { x:p.x, y:p.y };
     setMode('dim2');
   }else if(S.mode === 'dim2'){
-    // 寸法線の2点目 → 確定（続けて次も引ける）
-    if(S.pending && addDim(S.pending, p)){
+    // 寸法線の2点目 → 確定（続けて次も引ける・±10°以内は水平/垂直に補正）
+    if(S.pending && addDim(S.pending, axisLock(S.pending, p))){
       S.pending = null; S.previewB = null;
       setMode('dim1');
       updateAll();
@@ -1278,6 +1299,38 @@ async function savePdf(){
     console.error(err); toast('保存に失敗：' + (err && err.message || err), 'rd');
   }finally{ busy(false); }
 }
+// ---------- DWPへ戻す：線入りPDFを受け渡し保管庫(k='return')へ置く ----------
+// DWP側は「タブに戻った時」と「起動時」に確認して、新しい書類としてデスクへ取り込む
+function putReturnDb(name, bytes){
+  return new Promise((res, rej)=>{
+    let rq;
+    try{ rq = indexedDB.open('dwp_handoff', 1); }catch(e){ rej(e); return; }
+    rq.onupgradeneeded = ()=>{ try{ rq.result.createObjectStore('handoff', {keyPath:'k'}); }catch(_){} };
+    rq.onerror = ()=>rej(rq.error);
+    rq.onsuccess = ()=>{
+      const db = rq.result;
+      try{
+        const tx = db.transaction('handoff', 'readwrite');
+        tx.objectStore('handoff').put({ k:'return', name, bytes });
+        tx.oncomplete = ()=>{ db.close(); res(); };
+        tx.onerror = ()=>{ db.close(); rej(tx.error); };
+      }catch(e){ db.close(); rej(e); }
+    };
+  });
+}
+async function sendBackToDwp(){
+  try{
+    busy(true);
+    syncActive();
+    const d = S.docs[S.curDoc];
+    if(!d){ toast('図面がありません', 'rd'); return; }
+    if(!(d.mmPerPt && anyGridIn(d))){ toast('この図面にはまだ線がありません（基準合わせと線が必要）', 'am'); return; }
+    const bytes = await buildAnnotatedPdf(d);
+    await putReturnDb(outNameOf(d.fileName), bytes);
+    toast('DWPへ送りました。DWPのタブ（デスク）に戻ると新しい書類として届きます', 'gn');
+  }catch(err){ console.error(err); toast('DWPへ送れませんでした：' + (err && err.message || err), 'rd'); }
+  finally{ busy(false); }
+}
 // 1シートを画像化（base PDF描画＋線/寸法/符号の重ね）→ {png, ptW, ptH}
 async function renderSheetImage(d, p, scale){
   const page = await d.doc.getPage(p);
@@ -1436,7 +1489,19 @@ async function extractSnapData(page, vp1){
       const q=segInt(iSegs[i],iSegs[j]); if(q){ const k=Math.round(q[0]*2)+','+Math.round(q[1]*2); if(!seen.has(k)){ seen.add(k); pts.push(q); added++; } }
     }}
   }
-  return { segs, pts };
+  // 文字の中心は「文字専用の吸着点(tpts)」として別に持つ（snapPointで最優先扱いにする）
+  const tpts = [];
+  try{
+    const tc = await page.getTextContent();
+    for(const it of tc.items){
+      if(!it.str || !it.str.trim()) continue;
+      const tr = it.transform;
+      const cx = tr[4] + (it.width || 0) / 2, cy = tr[5] + (it.height || 0) / 2;
+      const q = vp1.convertToViewportPoint(cx, cy);
+      tpts.push([q[0], q[1]]);
+    }
+  }catch(e){ console.error(e); }
+  return { segs, pts, tpts };
 }
 function currentSnapData(){ const d=S.docs[S.curDoc]; return (d && d.snapCache && d.snapCache[S.pageNum]) || null; }
 async function ensureSnapData(){
@@ -1457,6 +1522,12 @@ async function ensureSnapData(){
 // カーソル(vp1)を最寄りの端点/交点(優先)か線上へ吸着。閾値thr内で当たれば{hit:true}
 function snapPoint(p, thr){
   const data=currentSnapData(); if(!data) return {x:p.x,y:p.y,hit:false};
+  // 文字の中心を最優先で吸着（範囲も1.5倍広め＝通り芯記号の◯へ確実に吸い付く）
+  if(data.tpts && data.tpts.length){
+    let bt=null, btd=(thr*1.5)*(thr*1.5);
+    for(const q of data.tpts){ const dx=q[0]-p.x, dy=q[1]-p.y, d=dx*dx+dy*dy; if(d<btd){ btd=d; bt=q; } }
+    if(bt) return {x:bt[0], y:bt[1], hit:true};
+  }
   let best=null, bd=thr*thr;
   for(const q of data.pts){ const dx=q[0]-p.x,dy=q[1]-p.y,d=dx*dx+dy*dy; if(d<bd){ bd=d; best=q; } }
   if(best) return {x:best[0],y:best[1],hit:true};
@@ -1492,6 +1563,19 @@ function snapDupLine(f, k){
   if(Math.abs(off) < 0.05) return 0;
   (f.offs = f.offs || {})[k] = off;
   return off;
+}
+// 2点目を水平/垂直へ吸着：1点目からの角度が±10°以内なら軸に合わせて「直線」にする
+// （通り芯・寸法はほぼ水平か垂直なので、少し手元がズレてもまっすぐ引ける）
+function axisLock(a, p){
+  if(!a) return p;
+  const dx = p.x - a.x, dy = p.y - a.y;
+  if(Math.abs(dx) < 1 && Math.abs(dy) < 1) return p;
+  const deg = Math.abs(Math.atan2(dy, dx)) * 180 / Math.PI;   // 0°=右向き, 90°=真上下
+  const toH = Math.min(deg, 180 - deg);      // 水平からの開き
+  const toV = Math.abs(90 - deg);            // 垂直からの開き
+  if(toH <= 10 && toH <= toV) return { x: p.x, y: a.y };      // 水平に固定
+  if(toV <= 10) return { x: a.x, y: p.y };                    // 垂直に固定
+  return p;                                   // 大きく斜めなら自由（斜め線も引ける）
 }
 // クリック/プレビュー用：スナップ有効なら吸着した点を返す
 function pickPoint(e){
@@ -1583,6 +1667,7 @@ function updateAll(){
   const curReady = has && S.mmPerPt && (anyGrid() || anyDim());
   const saveable = S.docs.some(d => ((d === S.docs[S.curDoc]) ? S.mmPerPt : d.mmPerPt) && (anyGridIn(d) || anyDimIn(d)));
   $('btnSave').disabled = !saveable || S.busy;
+  $('btnToDwp').disabled = !saveable || S.busy;
   $('btnPrint').disabled = !S.docs.length || S.busy;
   $('btnCloseAll').disabled = !S.docs.length || S.busy;
   $('btnSaveWork').disabled = !S.docs.length || S.busy;
@@ -1708,7 +1793,8 @@ cvOv.addEventListener('mousemove', e=>{
     let p = raw, hit = null;
     if(S.snapOn && currentSnapData()){ const s = snapPoint(raw, 10/S.zoom); if(s.hit){ p = { x:s.x, y:s.y }; hit = p; } }
     S.snapHit = hit;
-    if(S.mode === 'g2' || S.mode === 'dim2' || S.mode === 'paste') S.previewB = p;
+    if(S.mode === 'g2' || S.mode === 'dim2') S.previewB = axisLock(S.pending, p);   // プレビューの時点からまっすぐ
+    else if(S.mode === 'paste') S.previewB = p;
     drawOverlaySoon();
   }else if(S.mode === 'dup'){
     const f = gridsOf(S.pageNum)[S.activeIdx];
@@ -1923,6 +2009,7 @@ $('opacityRng').addEventListener('input', e=>{
 
 $('btnSave').addEventListener('click', savePdf);
 $('btnPrint').addEventListener('click', printPdf);
+$('btnToDwp').addEventListener('click', sendBackToDwp);
 
 // ---------- 初期化 ----------
 (function init(){
@@ -1961,6 +2048,47 @@ window.__mg = {
   test_clearGrids(){ S.grids = {}; S.activeIdx = -1; updateAll(); },
   test_exportBytes(){ return buildAnnotatedPdf(); },
 };
+
+// ---------- DWP連携（?dwp=1 付きで開かれた時だけ、受け渡し保管庫を確認） ----------
+// DWP（疑似DocuWorks）側が IndexedDB「dwp_handoff」にPDFを置いてこのアプリを開く。
+// PDF生成に時間がかかることがあるため、0.5秒ごと・最大30秒待つ。受け取ったら削除する。
+(function dwpHandoff(){
+  const tm = location.search.match(/[?&]dwp=([A-Za-z0-9]+)/);
+  if(!tm) return;
+  const myToken = tm[1];   // DWPが発行した照合トークン。これと一致する荷物だけ受け取る
+  let tries = 0;
+  const MAX = 60;                                 // 0.5秒×60回＝最大30秒
+  toast('DWPから図面を受け取っています…');
+  const timer = setInterval(check, 500);
+  check();
+  function fail(){ clearInterval(timer); toast('DWPから受け取れませんでした。DWP側からもう一度送ってください', 'rd'); }
+  function check(){
+    if(++tries > MAX){ fail(); return; }
+    let rq;
+    try{ rq = indexedDB.open('dwp_handoff', 1); }catch(_){ fail(); return; }
+    rq.onupgradeneeded = ()=>{ try{ rq.result.createObjectStore('handoff', {keyPath:'k'}); }catch(_){} };
+    rq.onerror = fail;
+    rq.onsuccess = ()=>{
+      const db = rq.result;
+      let st;
+      try{ st = db.transaction('handoff', 'readwrite').objectStore('handoff'); }catch(_){ db.close(); fail(); return; }
+      const g = st.get('pending');
+      g.onerror = ()=>db.close();
+      g.onsuccess = async ()=>{
+        const rec = g.result;
+        if(!(rec && rec.bytes && rec.bytes.length)){ db.close(); return; }   // まだ届いていない→次の周回へ
+        if(rec.token !== myToken){ st.delete('pending'); db.close(); return; }   // 前回の残骸→捨てて、自分宛てを待つ
+        st.delete('pending');                     // 受け取ったら消す（二重読み込み防止）
+        clearInterval(timer);
+        db.close();
+        try{
+          await addDoc(new Uint8Array(rec.bytes), rec.name || 'DWPからの図面.pdf');
+          toast('DWPから受け取りました：' + (rec.name || ''), 'gn');
+        }catch(e){ console.error(e); toast('受け取った図面を開けませんでした：' + (e && e.message || e), 'rd'); }
+      };
+    };
+  }
+})();
 </script>
 </body>
 </html>
